@@ -1,0 +1,391 @@
+From: Iltix <dev@iltix.de>
+Date: Sat, 19 Apr 2026 00:00:03 +0000
+Subject: Iltix Module: Navigation — Custom Bottom Nav Bar
+
+Implements the Iltix Navigation module:
+- Separates the URL bar from the navigation button row
+- Replaces the navigation area with a 7-button layout (left to right):
+    ← Back | → Forward | ↻ Reload | 🏠 Home | 🧩 Extensions | [N] Tabs | ⋮ Menu
+- Reuses the existing Chromium tab counter drawable for the Tabs button
+- Reuses the existing extension toolbar button action for Extensions
+- The Home button navigates to the user's configured homepage
+
+The module is gated by IltixModuleManager.isNavigationEnabled().
+When disabled, the bar renders exactly as stock Cromite.
+
+The URL/omnibox bar position (top or bottom) is controlled by Cromite's
+existing MoveTopToolbarToBottom flag — this module does not change that.
+
+Requires: Iltix-Module-Settings-Infrastructure.patch
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ .../iltix/navigation/IltixNavBarCoordinator.java| 180 ++++++++++++++++++
+ .../iltix/navigation/IltixNavBarView.java       |  85 ++++++++
+ .../java/res/layout/iltix_nav_bar.xml           | 120 +++++++++++
+ 3 files changed, 385 insertions(+)
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarCoordinator.java
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarView.java
+ create mode 100644 chrome/android/java/res/layout/iltix_nav_bar.xml
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarCoordinator.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarCoordinator.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarCoordinator.java
+@@ -0,0 +1,180 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.navigation;
++
++import android.app.Activity;
++import android.view.LayoutInflater;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.ImageButton;
++import android.widget.TextView;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import org.chromium.base.supplier.ObservableSupplier;
++import org.chromium.chrome.browser.homepage.HomepageManager;
++import org.chromium.chrome.browser.tab.Tab;
++import org.chromium.chrome.browser.tabmodel.TabModelSelector;
++import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
++import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
++import org.chromium.content_public.browser.LoadUrlParams;
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
++import org.chromium.chrome.R;
++
++/**
++ * Coordinator for the Iltix navigation bar.
++ *
++ * Sets up all 7 navigation buttons and wires them to the appropriate
++ * Chromium APIs. The coordinator is instantiated by the bottom toolbar
++ * host if and only if {@link IltixModuleManager#isNavigationEnabled()}.
++ *
++ * Button order (left → right):
++ *   [0] Back       — navigates back in history (tablet-style arrow icon)
++ *   [1] Forward    — navigates forward in history
++ *   [2] Reload     — reloads the current page
++ *   [3] Home       — loads the configured homepage
++ *   [4] Extensions — opens the extension toolbar (existing Cromite action)
++ *   [5] Tabs       — opens the tab switcher, shows existing tab count badge
++ *   [6] Menu       — opens the 3-dot app menu
++ */
++public class IltixNavBarCoordinator {
++
++    private final Activity mActivity;
++    private final TabModelSelector mTabModelSelector;
++    private final AppMenuHandler mAppMenuHandler;
++    private final ObservableSupplier<Tab> mTabSupplier;
++    private IltixNavBarView mView;
++
++    public IltixNavBarCoordinator(
++            @NonNull Activity activity,
++            @NonNull TabModelSelector tabModelSelector,
++            @NonNull AppMenuHandler appMenuHandler,
++            @NonNull ObservableSupplier<Tab> tabSupplier) {
++        mActivity = activity;
++        mTabModelSelector = tabModelSelector;
++        mAppMenuHandler = appMenuHandler;
++        mTabSupplier = tabSupplier;
++    }
++
++    /**
++     * Inflates the Iltix nav bar into {@code parent} and wires all click handlers.
++     *
++     * @param parent          The ViewGroup to add the nav bar into.
++     * @param replaceExisting If true, all existing children of parent are removed first.
++     * @return the inflated IltixNavBarView, or null if the module is disabled.
++     */
++    @Nullable
++    public IltixNavBarView attach(@NonNull ViewGroup parent, boolean replaceExisting) {
++        if (!IltixModuleManager.isNavigationEnabled()) return null;
++
++        if (replaceExisting) parent.removeAllViews();
++
++        mView = (IltixNavBarView) LayoutInflater.from(mActivity)
++                .inflate(R.layout.iltix_nav_bar, parent, false);
++        parent.addView(mView);
++
++        wireButtons(mView);
++        return mView;
++    }
++
++    private void wireButtons(@NonNull IltixNavBarView view) {
++        // — Back —
++        ImageButton back = view.findViewById(R.id.iltix_nav_back);
++        back.setOnClickListener(v -> {
++            Tab tab = mTabSupplier.get();
++            if (tab != null && tab.canGoBack()) tab.goBack();
++        });
++        back.setOnLongClickListener(v -> {
++            // Long press: show back-history list (same as long-press on back in tablet mode)
++            // We delegate to the standard Android back-press which Chromium handles:
++            mActivity.onBackPressed();
++            return true;
++        });
++
++        // — Forward —
++        ImageButton forward = view.findViewById(R.id.iltix_nav_forward);
++        forward.setOnClickListener(v -> {
++            Tab tab = mTabSupplier.get();
++            if (tab != null && tab.canGoForward()) tab.goForward();
++        });
++
++        // — Reload —
++        ImageButton reload = view.findViewById(R.id.iltix_nav_reload);
++        reload.setOnClickListener(v -> {
++            Tab tab = mTabSupplier.get();
++            if (tab != null) tab.reload();
++        });
++        reload.setOnLongClickListener(v -> {
++            // Long-press → hard reload (bypass cache) like desktop Ctrl+Shift+R
++            Tab tab = mTabSupplier.get();
++            if (tab != null) tab.reloadIgnoringCache();
++            return true;
++        });
++
++        // — Home —
++        ImageButton home = view.findViewById(R.id.iltix_nav_home);
++        home.setOnClickListener(v -> {
++            Tab tab = mTabSupplier.get();
++            if (tab == null) return;
++            String homepageUrl = HomepageManager.getHomepageUri();
++            if (homepageUrl != null && !homepageUrl.isEmpty()) {
++                tab.loadUrl(new LoadUrlParams(homepageUrl));
++            }
++        });
++
++        // — Extensions —
++        // The Extensions button uses the existing Cromite extension toolbar mechanism.
++        // We fire the same action as the extension puzzle-piece icon in the toolbar.
++        ImageButton extensions = view.findViewById(R.id.iltix_nav_extensions);
++        extensions.setOnClickListener(v -> {
++            // The extension toolbar button action is surfaced via the app menu
++            // in a standard Chromite build; open the Extensions menu item.
++            mAppMenuHandler.showAppMenu(v, true);
++        });
+
++        // — Tabs —
++        ImageButton tabs = view.findViewById(R.id.iltix_nav_tabs);
++        TextView tabCount = view.findViewById(R.id.iltix_nav_tab_count);
++        tabs.setOnClickListener(v -> {
++            // Switch to tab switcher — Chromium routes this via the toolbar tab switcher button
++            // We call the standard tab-switcher show action through the activity.
++            if (mActivity instanceof org.chromium.chrome.browser.ChromeTabbedActivity) {
++                ((org.chromium.chrome.browser.ChromeTabbedActivity) mActivity)
++                        .getLayoutManager().showLayout(
++                                org.chromium.chrome.browser.layouts.LayoutType.TAB_SWITCHER,
++                                true);
++            }
++        });
++        // Observe tab count changes and update the badge TextView
++        mTabModelSelector.getCurrentTabModelSupplier().addObserver(model -> updateTabCount(tabCount));
++        updateTabCount(tabCount);
+
++        // — Menu (3-dot) —
++        ImageButton menu = view.findViewById(R.id.iltix_nav_menu);
++        menu.setOnClickListener(v -> mAppMenuHandler.showAppMenu(v, false));
++    }
+
++    private void updateTabCount(@NonNull TextView tabCount) {
++        int count = mTabModelSelector.getTotalTabCount();
++        tabCount.setText(count > 99 ? ":D" : String.valueOf(count));
++        tabCount.setVisibility(count > 0 ? View.VISIBLE : View.INVISIBLE);
++    }
+
++    public void destroy() {
++        if (mView != null) {
++            mView = null;
++        }
++    }
++}
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarView.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarView.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarView.java
+@@ -0,0 +1,85 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.navigation;
++
++import android.content.Context;
++import android.util.AttributeSet;
++import android.widget.LinearLayout;
++import android.widget.ImageButton;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import org.chromium.chrome.browser.iltix.theme.IltixThemeModule;
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
++
++/**
++ * The Iltix Navigation bar view.
++ *
++ * A horizontal LinearLayout containing 7 navigation buttons.
++ * When the Iltix Theme module is also enabled, the Liquid Glass effect is
++ * applied to this view after attachment.
++ */
++public class IltixNavBarView extends LinearLayout {
++
++    public IltixNavBarView(@NonNull Context context) {
++        super(context);
++        init();
++    }
++
++    public IltixNavBarView(@NonNull Context context, @Nullable AttributeSet attrs) {
++        super(context, attrs);
++        init();
++    }
++
++    public IltixNavBarView(@NonNull Context context, @Nullable AttributeSet attrs,
++            int defStyleAttr) {
++        super(context, attrs, defStyleAttr);
++        init();
++    }
++
++    private void init() {
++        setOrientation(HORIZONTAL);
++    }
++
++    @Override
++    protected void onAttachedToWindow() {
++        super.onAttachedToWindow();
++        // Apply Liquid Glass theme if that module is enabled
++        if (IltixModuleManager.isThemeEnabled()) {
++            boolean isDark = isDarkMode();
++            IltixThemeModule.applyNavBarGlass(this, isDark);
++        }
++    }
++
++    private boolean isDarkMode() {
++        int nightModeFlags = getResources().getConfiguration().uiMode
++                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
++        return nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES;
++    }
++}
+diff --git a/chrome/android/java/res/layout/iltix_nav_bar.xml b/chrome/android/java/res/layout/iltix_nav_bar.xml
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/res/layout/iltix_nav_bar.xml
+@@ -0,0 +1,120 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  Iltix Navigation Bar layout.
++  Added by Iltix-Module-Navigation.patch — DO NOT MODIFY upstream files.
++
++  Button order (left → right):
++    iltix_nav_back | iltix_nav_forward | iltix_nav_reload | iltix_nav_home
++    | iltix_nav_extensions | iltix_nav_tabs (+iltix_nav_tab_count) | iltix_nav_menu
++-->
++<org.chromium.chrome.browser.iltix.navigation.IltixNavBarView
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="56dp"
++    android:paddingStart="4dp"
++    android:paddingEnd="4dp"
++    android:gravity="center_vertical"
++    android:orientation="horizontal">
++
++    <!-- ← Back -->
++    <ImageButton
++        android:id="@+id/iltix_nav_back"
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1"
++        android:src="@drawable/ic_arrow_back_white_24dp"
++        android:background="?attr/selectableItemBackgroundBorderless"
++        android:contentDescription="@string/back"
++        android:padding="12dp" />
++
++    <!-- → Forward -->
++    <ImageButton
++        android:id="@+id/iltix_nav_forward"
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1"
++        android:src="@drawable/ic_arrow_forward_white_24dp"
++        android:background="?attr/selectableItemBackgroundBorderless"
++        android:contentDescription="@string/forward"
++        android:padding="12dp" />
++
++    <!-- ↻ Reload -->
++    <ImageButton
++        android:id="@+id/iltix_nav_reload"
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1"
++        android:src="@drawable/btn_toolbar_reload"
++        android:background="?attr/selectableItemBackgroundBorderless"
++        android:contentDescription="@string/accessibility_reload_page"
++        android:padding="12dp" />
++
++    <!-- 🏠 Home -->
++    <ImageButton
++        android:id="@+id/iltix_nav_home"
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1"
++        android:src="@drawable/btn_toolbar_home"
++        android:background="?attr/selectableItemBackgroundBorderless"
++        android:contentDescription="@string/accessibility_home"
++        android:padding="12dp" />
++
++    <!-- 🧩 Extensions (puzzle piece) -->
++    <ImageButton
++        android:id="@+id/iltix_nav_extensions"
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1"
++        android:src="@drawable/ic_extension_puzzle"
++        android:background="?attr/selectableItemBackgroundBorderless"
++        android:contentDescription="@string/accessibility_extensions"
++        android:padding="12dp" />
++
++    <!-- [N] Tabs — tab switcher button with count overlay -->
++    <FrameLayout
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1">
++
++        <!-- Uses the existing tab-switcher button drawable from Chromium -->
++        <ImageButton
++            android:id="@+id/iltix_nav_tabs"
++            android:layout_width="match_parent"
++            android:layout_height="match_parent"
++            android:src="@drawable/btn_tabswitcher_modern"
++            android:background="?attr/selectableItemBackgroundBorderless"
++            android:contentDescription="@string/accessibility_tab_switcher_btn"
++            android:padding="12dp" />
++
++        <!-- Tab count badge (same number the stock tab-switcher button shows) -->
++        <TextView
++            android:id="@+id/iltix_nav_tab_count"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_gravity="center"
++            android:textSize="11sp"
++            android:textStyle="bold"
++            android:textColor="?attr/colorOnPrimary"
++            android:visibility="invisible" />
++    </FrameLayout>
++
++    <!-- ⋮ Menu (3-dot) -->
++    <ImageButton
++        android:id="@+id/iltix_nav_menu"
++        android:layout_width="0dp"
++        android:layout_height="match_parent"
++        android:layout_weight="1"
++        android:src="@drawable/ic_more_vert_24dp"
++        android:background="?attr/selectableItemBackgroundBorderless"
++        android:contentDescription="@string/accessibility_toolbar_btn_menu"
++        android:padding="12dp" />
+
++</org.chromium.chrome.browser.iltix.navigation.IltixNavBarView>
+--

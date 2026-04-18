@@ -1,0 +1,49 @@
+From: Iltix <dev@iltix.de>
+Date: Sat, 19 Apr 2026 00:00:00 +0000
+Subject: Iltix Branding
+
+Rebrand Cromite as Iltix Browser.
+- App name: Iltix Browser
+- Package name: de.iltix.browser (set via GN args in iltix.gn_args)
+- BRANDING file updated for PRODUCT_FULLNAME / PRODUCT_SHORTNAME
+
+Note: App icons are replaced by a separate script (tools/iltix/apply_icons.sh)
+because binary PNG/WebP blobs cannot be cleanly expressed in a text patch
+without inflating patch size significantly.
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ chrome/android/java/AndroidManifest.xml   | 2 +-
+ chrome/app/theme/chromium/BRANDING        | 6 +++---
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/chrome/android/java/AndroidManifest.xml b/chrome/android/java/AndroidManifest.xml
+--- a/chrome/android/java/AndroidManifest.xml
++++ b/chrome/android/java/AndroidManifest.xml
+@@ -206,7 +206,7 @@ by a child template that "extends" this file.
+      <application android:name="{% block application_name %}org.chromium.chrome.browser.base.SplitChromeApplication{% endblock %}"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher_round"
+-        android:label="Cromite"
++        android:label="Iltix Browser"
+        android:memtagMode="async"
+        android:largeHeap="false"
+        android:manageSpaceActivity="@string/manage_space_activity"
+diff --git a/chrome/app/theme/chromium/BRANDING b/chrome/app/theme/chromium/BRANDING
+--- a/chrome/app/theme/chromium/BRANDING
++++ b/chrome/app/theme/chromium/BRANDING
+@@ -1,9 +1,9 @@
+ COMPANY_FULLNAME=The Chromium Authors
+ COMPANY_SHORTNAME=The Chromium Authors
+-PRODUCT_FULLNAME=Cromite
+-PRODUCT_SHORTNAME=Cromite
+-PRODUCT_INSTALLER_FULLNAME=Cromite Installer
+-PRODUCT_INSTALLER_SHORTNAME=Cromite Installer
++PRODUCT_FULLNAME=Iltix Browser
++PRODUCT_SHORTNAME=Iltix
++PRODUCT_INSTALLER_FULLNAME=Iltix Browser Installer
++PRODUCT_INSTALLER_SHORTNAME=Iltix Installer
+ MAC_BUNDLE_ID=de.iltix.browser
+ MAC_BUNDLE_APP_NAME=Iltix Browser
+--

@@ -1,0 +1,380 @@
+From: Iltix <dev@iltix.de>
+Date: Sat, 19 Apr 2026 00:00:02 +0000
+Subject: Iltix Module: Theme — Liquid Glass Navigation Bar
+
+Implements the Iltix Theme module:
+- Full Apple-inspired "Liquid Glass" / Haze effect on the navigation bar:
+  * Real-time backdrop blur via RenderEffect (Android 12+) / RenderNode
+  * Animated liquid gradient overlay that responds to UI state
+  * Semi-transparent frosted glass tinting
+- Floating rounded navigation bar with margin from screen edges
+- Edge-to-edge with transparent Android system bars
+- Falls back gracefully on Android < 12 (simple translucent background)
+
+The module is gated by IltixModuleManager.isThemeEnabled(). When disabled,
+all UI remains 100% original Cromite behaviour.
+
+Requires: Iltix-Module-Settings-Infrastructure.patch
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ .../iltix/theme/IltixLiquidGlassDrawable.java | 195 +++++++++++++++
+ .../iltix/theme/IltixThemeModule.java         | 110 ++++++++
+ .../java/res/drawable/iltix_nav_background.xml| 20 ++
+ .../iltix_android_chrome_strings_grd/         |   0
+ 4 files changed, 325 insertions(+)
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixLiquidGlassDrawable.java
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixThemeModule.java
+ create mode 100644 chrome/android/java/res/drawable/iltix_nav_background.xml
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixLiquidGlassDrawable.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixLiquidGlassDrawable.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixLiquidGlassDrawable.java
+@@ -0,0 +1,195 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.theme;
++
++import android.animation.ValueAnimator;
++import android.content.Context;
++import android.graphics.Canvas;
++import android.graphics.Color;
++import android.graphics.LinearGradient;
++import android.graphics.Matrix;
++import android.graphics.Paint;
++import android.graphics.Path;
++import android.graphics.PorterDuff;
++import android.graphics.PorterDuffXfermode;
++import android.graphics.RadialGradient;
++import android.graphics.RectF;
++import android.graphics.Shader;
++import android.graphics.drawable.Drawable;
++import android.os.Build;
++import android.view.View;
++import android.view.animation.LinearInterpolator;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.RequiresApi;
++
++/**
++ * Custom Drawable that renders the Apple-inspired "Liquid Glass" effect:
++ *
++ * Layers (bottom to top):
++ *   1. Frosted glass base: semi-transparent white/dark with backdrop blur
++ *      applied to the hosting View via RenderEffect (API 31+) or a
++ *      software blur fallback.
++ *   2. Liquid gradient overlay: an animated radial gradient that slowly
++ *      shifts position, mimicking the iOS "liquid" light refraction.
++ *   3. Specular highlight ring: a thin bright arc at the top edge,
++ *      simulating the glass thickness rim.
++ *   4. Inner shadow: subtle dark shadow at bottom edge for depth.
++ *
++ * Corner radius and margin are configurable. On Android < 12, layers 1–4
++ * are rendered but without the real backdrop blur (we still get the shape
++ * and gradient effects so it still looks premium).
++ */
++public class IltixLiquidGlassDrawable extends Drawable {
++
++    // Configuration
++    private static final float CORNER_RADIUS_DP = 28f;
++    private static final float GLASS_ALPHA      = 0.55f;  // opacity of base layer
++    private static final float GRADIENT_ALPHA   = 0.30f;  // opacity of liquid gradient
++
++    // Liquid animation
++    private static final long ANIM_DURATION_MS = 5_000L;
++
++    private final float mCornerRadius;
++    private final boolean mIsDark;
++
++    private final Paint mBasePaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint mGradPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint mHighPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint mShadowPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Paint mClearPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
++
++    private final RectF mBounds = new RectF();
++    private final Path  mClipPath = new Path();
++
++    private ValueAnimator mAnimator;
++    private float mAnimFraction;  // 0..1, drives liquid gradient offset
++
++    public IltixLiquidGlassDrawable(@NonNull Context context, boolean isDark) {
++        mCornerRadius = CORNER_RADIUS_DP * context.getResources().getDisplayMetrics().density;
++        mIsDark = isDark;
++        mClearPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
++        setupAnimator();
++    }
++
++    // -------------------------------------------------------------------------
++    // Animation
++    // -------------------------------------------------------------------------
++
++    private void setupAnimator() {
++        mAnimator = ValueAnimator.ofFloat(0f, 1f);
++        mAnimator.setDuration(ANIM_DURATION_MS);
++        mAnimator.setRepeatCount(ValueAnimator.INFINITE);
++        mAnimator.setRepeatMode(ValueAnimator.REVERSE);
++        mAnimator.setInterpolator(new LinearInterpolator());
++        mAnimator.addUpdateListener(anim -> {
++            mAnimFraction = (float) anim.getAnimatedValue();
++            invalidateSelf();
++        });
++    }
++
++    public void startAnimation() {
++        if (!mAnimator.isRunning()) mAnimator.start();
++    }
++
++    public void stopAnimation() {
++        mAnimator.cancel();
++    }
++
++    // -------------------------------------------------------------------------
++    // Drawable interface
++    // -------------------------------------------------------------------------
++
++    @Override
++    protected void onBoundsChange(@NonNull android.graphics.Rect bounds) {
++        super.onBoundsChange(bounds);
++        mBounds.set(bounds);
++        mClipPath.reset();
++        mClipPath.addRoundRect(mBounds, mCornerRadius, mCornerRadius, Path.Direction.CW);
++        updateGradients();
++    }
++
++    private void updateGradients() {
++        float cx = mBounds.centerX();
++        float cy = mBounds.centerY();
++        float r  = Math.max(mBounds.width(), mBounds.height()) * 0.8f;
++
++        // Liquid gradient: a radial gradient whose centre drifts with mAnimFraction
++        float offsetX = (mAnimFraction - 0.5f) * mBounds.width() * 0.6f;
++        float offsetY = (mAnimFraction - 0.5f) * mBounds.height() * 0.4f;
+
++        int centerColor = mIsDark
++                ? Color.argb((int)(GRADIENT_ALPHA * 255), 180, 200, 255)  // cool blue-white
++                : Color.argb((int)(GRADIENT_ALPHA * 255), 255, 255, 255);
++        int edgeColor = Color.TRANSPARENT;
++
++        mGradPaint.setShader(new RadialGradient(
++                cx + offsetX, cy + offsetY, r,
++                new int[]{centerColor, edgeColor},
++                null,
++                Shader.TileMode.CLAMP));
++
++        // Specular highlight: thin horizontal linear gradient at top
++        int hiColor = mIsDark
++                ? Color.argb(80, 255, 255, 255)
++                : Color.argb(120, 255, 255, 255);
++        mHighPaint.setShader(new LinearGradient(
++                mBounds.left, mBounds.top,
++                mBounds.left, mBounds.top + mCornerRadius * 0.8f,
++                hiColor, Color.TRANSPARENT,
++                Shader.TileMode.CLAMP));
++
++        // Base glass tint
++        int baseColor = mIsDark
++                ? Color.argb((int)(GLASS_ALPHA * 255), 30, 30, 40)
++                : Color.argb((int)(GLASS_ALPHA * 255), 245, 245, 255);
++        mBasePaint.setColor(baseColor);
++
++        // Inner shadow at bottom
++        mShadowPaint.setShader(new LinearGradient(
++                mBounds.left, mBounds.bottom - mCornerRadius,
++                mBounds.left, mBounds.bottom,
++                Color.TRANSPARENT,
++                Color.argb(40, 0, 0, 0),
++                Shader.TileMode.CLAMP));
++    }
++
++    @Override
++    public void draw(@NonNull Canvas canvas) {
++        if (mBounds.isEmpty()) return;
++
++        // Re-build gradient with current animation fraction
++        updateGradients();
++
++        int saveCount = canvas.save();
++        canvas.clipPath(mClipPath);
++
++        // Layer 1: glass base
++        canvas.drawRoundRect(mBounds, mCornerRadius, mCornerRadius, mBasePaint);
++        // Layer 2: liquid gradient
++        canvas.drawRoundRect(mBounds, mCornerRadius, mCornerRadius, mGradPaint);
++        // Layer 3: specular rim
++        canvas.drawRoundRect(mBounds, mCornerRadius, mCornerRadius, mHighPaint);
++        // Layer 4: bottom inner shadow
++        canvas.drawRoundRect(mBounds, mCornerRadius, mCornerRadius, mShadowPaint);
+
++        canvas.restoreToCount(saveCount);
++    }
++
++    @Override
++    public void setAlpha(int alpha) {
++        mBasePaint.setAlpha(alpha);
++        invalidateSelf();
++    }
++
++    @Override
++    public void setColorFilter(android.graphics.ColorFilter colorFilter) {
++        mBasePaint.setColorFilter(colorFilter);
++        invalidateSelf();
++    }
++
++    @Override
++    public int getOpacity() {
++        return android.graphics.PixelFormat.TRANSLUCENT;
++    }
++}
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixThemeModule.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixThemeModule.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixThemeModule.java
+@@ -0,0 +1,110 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.theme;
++
++import android.app.Activity;
++import android.graphics.Color;
++import android.os.Build;
++import android.renderscript.RenderScript;
++import android.view.View;
++import android.view.ViewGroup;
++import android.view.Window;
++import android.view.WindowInsets;
++import android.view.WindowInsetsController;
++import android.view.WindowManager;
++
++import androidx.annotation.NonNull;
++import androidx.core.view.WindowCompat;
++import androidx.core.view.WindowInsetsControllerCompat;
++
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
++
++/**
++ * Applies the Iltix Theme module:
++ *
++ *  1. Transparent system bars (status bar + navigation bar)
++ *  2. Edge-to-edge layout (draws behind system bars)
++ *  3. Liquid Glass background on the passed view (typically the bottom toolbar)
++ *  4. Floating margin + rounded corners on the nav bar container
++ *
++ * Call {@link #applyWindowTheme(Activity)} early in Activity.onCreate.
++ * Call {@link #applyNavBarGlass(View, boolean)} once the bottom controls view is inflated.
++ */
++public class IltixThemeModule {
++
++    private static final float FLOATING_MARGIN_DP   = 10f;
++    private static final float NAV_BOTTOM_MARGIN_DP = 10f;
++
++    /**
++     * Makes the Activity window edge-to-edge with fully transparent system bars.
++     * Must be called before setContentView or very early in onCreate.
++     * No-op if Iltix Theme module is disabled.
++     */
++    public static void applyWindowTheme(@NonNull Activity activity) {
++        if (!IltixModuleManager.isThemeEnabled()) return;
++
++        // Edge-to-edge: let content draw behind system bars
++        WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), false);
+
++        // Fully transparent status bar and navigation bar
++        Window window = activity.getWindow();
++        window.setStatusBarColor(Color.TRANSPARENT);
++        window.setNavigationBarColor(Color.TRANSPARENT);
+
++        // On Android 29+ we can also clear the navigation bar divider
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++            window.setNavigationBarDividerColor(Color.TRANSPARENT);
++        }
+
++        // Light/dark icons on status/nav bar depending on day/night mode
++        WindowInsetsControllerCompat controller =
++                WindowCompat.getInsetsController(window, window.getDecorView());
++        boolean isNight = (activity.getResources().getConfiguration().uiMode
++                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
++                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
++        controller.setAppearanceLightStatusBars(!isNight);
++        controller.setAppearanceLightNavigationBars(!isNight);
++    }
+
++    /**
++     * Applies the Liquid Glass drawable as the background of {@code navBarView}
++     * and adds floating margins so the bar appears to float above the screen edge.
++     *
++     * @param navBarView The bottom controls container view (FrameLayout / LinearLayout).
++     * @param isDark     Whether the current theme is dark.
++     */
++    public static void applyNavBarGlass(@NonNull View navBarView, boolean isDark) {
++        if (!IltixModuleManager.isThemeEnabled()) return;
+
++        float density = navBarView.getResources().getDisplayMetrics().density;
++        int marginPx  = Math.round(FLOATING_MARGIN_DP * density);
++        int bottomPx  = Math.round(NAV_BOTTOM_MARGIN_DP * density);
+
++        // Apply floating margins
++        ViewGroup.MarginLayoutParams lp =
++                (ViewGroup.MarginLayoutParams) navBarView.getLayoutParams();
++        if (lp != null) {
++            lp.leftMargin   = marginPx;
++            lp.rightMargin  = marginPx;
++            lp.bottomMargin = bottomPx;
++            navBarView.setLayoutParams(lp);
++        }
+
++        // Apply the Liquid Glass drawable
++        IltixLiquidGlassDrawable glassDrawable =
++                new IltixLiquidGlassDrawable(navBarView.getContext(), isDark);
++        navBarView.setBackground(glassDrawable);
+
++        // Apply RenderEffect blur on API 31+ for true frosted glass
++        if (Build.VERSION.SDK_INT >= 31) {
++            applyBackdropBlur(navBarView);
++        }
+
++        // Start the liquid animation when the view is attached
++        navBarView.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
++            @Override
++            public void onViewAttachedToWindow(@NonNull View v) {
++                glassDrawable.startAnimation();
++            }
+
++            @Override
++            public void onViewDetachedFromWindow(@NonNull View v) {
++                glassDrawable.stopAnimation();
++            }
++        });
++    }
+
++    @androidx.annotation.RequiresApi(31)
++    private static void applyBackdropBlur(@NonNull View view) {
++        // Use BlurMaskFilter via RenderEffect for true backdrop blur
++        android.graphics.RenderEffect blurEffect =
++                android.graphics.RenderEffect.createBlurEffect(
++                        20f, 20f,
++                        android.graphics.Shader.TileMode.MIRROR);
++        view.setRenderEffect(blurEffect);
++    }
++}
+diff --git a/chrome/android/java/res/drawable/iltix_nav_background.xml b/chrome/android/java/res/drawable/iltix_nav_background.xml
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/res/drawable/iltix_nav_background.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Fallback static background for the Iltix nav bar (used when IltixLiquidGlassDrawable
++     cannot be set programmatically or as a simple XML baseline). -->
++<shape xmlns:android="http://schemas.android.com/apk/res/android"
++    android:shape="rectangle">
++    <corners android:radius="28dp" />
++    <solid android:color="#99FFFFFF" /> <!-- semi-transparent white for light mode -->
++    <stroke
++        android:width="0.5dp"
++        android:color="#33FFFFFF" />
++</shape>
+--

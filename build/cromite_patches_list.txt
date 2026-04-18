@@ -329,3 +329,14 @@ Eyeo-Adblock-for-Cromite.patch
 # extension patches
 Experimental-support-for-extensions-on-Android.patch
 Enable-extension-in-incognito.patch
+
+# ============================================================
+# Iltix Browser patches
+# Applied after all Cromite patches for minimal merge conflict surface.
+# Source: https://github.com/JensorX/iltix-browser
+# ============================================================
+Iltix-Branding.patch
+Iltix-Module-Settings-Infrastructure.patch
+Iltix-Module-Theme.patch
+Iltix-Module-Navigation.patch
+Iltix-Module-AutoHideNavigation.patch

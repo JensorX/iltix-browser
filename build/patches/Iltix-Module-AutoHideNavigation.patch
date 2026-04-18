@@ -1,0 +1,200 @@
+From: Iltix <dev@iltix.de>
+Date: Sat, 19 Apr 2026 00:00:04 +0000
+Subject: Iltix Module: Auto-Hide Navigation
+
+Implements scroll-triggered hide/show animation for the navigation bar:
+- Scrolling down: nav bar slides out with a smooth animation (translationY)
+- Scrolling up: nav bar slides back in
+- Fullscreen: website is visible without any nav bar obstruction
+- Respects the existing "Always show toolbar" (Toolbar Scroll Ablation) setting:
+  if that setting is enabled, the Auto-Hide module is a no-op.
+- Implements a scroll threshold before reacting to prevent jitter on micro-scrolls.
+
+The module is gated by IltixModuleManager.isAutoHideEnabled().
+When disabled, bar visibility is 100% stock Cromite behaviour.
+
+Requires: Iltix-Module-Settings-Infrastructure.patch
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ .../iltix/autohide/IltixAutoHideController.java | 155 +++++++++++++++++++
+ 1 file changed, 155 insertions(+)
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/autohide/IltixAutoHideController.java
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/autohide/IltixAutoHideController.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/autohide/IltixAutoHideController.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/autohide/IltixAutoHideController.java
+@@ -0,0 +1,155 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.autohide;
++
++import android.animation.Animator;
++import android.animation.AnimatorListenerAdapter;
++import android.animation.ObjectAnimator;
++import android.view.View;
++import android.view.animation.DecelerateInterpolator;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
++import org.chromium.chrome.browser.flags.ChromeFeatureList;
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
++
++/**
++ * Controls the scroll-triggered hide/show animation of the Iltix navigation bar.
++ *
++ * <h3>Usage</h3>
++ * <pre>
++ *   IltixAutoHideController autoHide = new IltixAutoHideController(navBarView);
++ *   // Call this from wherever you receive scroll-offset updates:
++ *   autoHide.onScrollOffsetChanged(dy);
++ * </pre>
++ *
++ * <h3>Compatibility</h3>
++ * If Cromite's "Toolbar Scroll Ablation" feature flag is enabled
++ * ({@code android-toolbar-scroll-ablation}), auto-hide is skipped entirely.
++ *
++ * <h3>States</h3>
++ * <ul>
++ *   <li>VISIBLE: nav bar is fully shown (translationY == 0)</li>
++ *   <li>HIDING: slide-out animation running</li>
++ *   <li>HIDDEN: nav bar is fully hidden (translationY == height)</li>
++ *   <li>SHOWING: slide-in animation running</li>
++ * </ul>
++ */
++public class IltixAutoHideController {
++
++    /** Minimum cumulative scroll (px) before triggering a direction change. */
++    private static final int SCROLL_THRESHOLD_PX = 30;
++
++    /** Animation duration in milliseconds. */
++    private static final long ANIM_DURATION_MS = 250L;
++
++    private enum State { VISIBLE, HIDING, HIDDEN, SHOWING }
++
++    private final View mNavBarView;
++    private State mState = State.VISIBLE;
++    private int mScrollAccumulator;     // accumulates scroll deltas to apply threshold
++    private ObjectAnimator mAnimator;
++
++    /**
++     * Creates a controller for {@code navBarView}.
++     *
++     * @param navBarView The navigation bar view to animate. Must have a fixed height.
++     */
++    public IltixAutoHideController(@NonNull View navBarView) {
++        mNavBarView = navBarView;
++    }
++
++    /**
++     * Called when the page scroll offset changes.
++     *
++     * @param dy Positive = scrolled down, negative = scrolled up (in pixels).
++     */
++    public void onScrollOffsetChanged(int dy) {
++        if (!IltixModuleManager.isAutoHideEnabled()) return;
++
++        // Respect "Always show toolbar" Cromite setting
++        if (isToolbarScrollAblationActive()) return;
++
++        mScrollAccumulator += dy;
+
++        if (mScrollAccumulator > SCROLL_THRESHOLD_PX) {
++            // User scrolled down far enough → hide
++            mScrollAccumulator = 0;
++            hideNavBar();
++        } else if (mScrollAccumulator < -SCROLL_THRESHOLD_PX) {
++            // User scrolled up far enough → show
++            mScrollAccumulator = 0;
++            showNavBar();
++        }
++    }
+
++    // -------------------------------------------------------------------------
++    // Animation helpers
++    // -------------------------------------------------------------------------
+
++    private void hideNavBar() {
++        if (mState == State.HIDING || mState == State.HIDDEN) return;
+
++        cancelCurrentAnim();
++        float targetY = mNavBarView.getHeight();
++        mAnimator = ObjectAnimator.ofFloat(mNavBarView, View.TRANSLATION_Y, mNavBarView.getTranslationY(), targetY);
++        mAnimator.setDuration(ANIM_DURATION_MS);
++        mAnimator.setInterpolator(new DecelerateInterpolator());
++        mAnimator.addListener(new AnimatorListenerAdapter() {
++            @Override
++            public void onAnimationStart(Animator animation) {
++                mState = State.HIDING;
++            }
+
++            @Override
++            public void onAnimationEnd(Animator animation) {
++                if (mState == State.HIDING) {
++                    mState = State.HIDDEN;
++                }
++            }
++        });
++        mAnimator.start();
++    }
+
++    private void showNavBar() {
++        if (mState == State.SHOWING || mState == State.VISIBLE) return;
+
++        cancelCurrentAnim();
++        mAnimator = ObjectAnimator.ofFloat(mNavBarView, View.TRANSLATION_Y, mNavBarView.getTranslationY(), 0f);
++        mAnimator.setDuration(ANIM_DURATION_MS);
++        mAnimator.setInterpolator(new DecelerateInterpolator());
++        mAnimator.addListener(new AnimatorListenerAdapter() {
++            @Override
++            public void onAnimationStart(Animator animation) {
++                mState = State.SHOWING;
++            }
+
++            @Override
++            public void onAnimationEnd(Animator animation) {
++                if (mState == State.SHOWING) {
++                    mState = State.VISIBLE;
++                }
++            }
++        });
++        mAnimator.start();
++    }
+
++    private void cancelCurrentAnim() {
++        if (mAnimator != null && mAnimator.isRunning()) {
++            mAnimator.cancel();
++        }
++    }
+
++    /** Resets the bar to fully visible state (e.g. on page navigation). */
++    public void resetToVisible() {
++        cancelCurrentAnim();
++        mNavBarView.setTranslationY(0f);
++        mScrollAccumulator = 0;
++        mState = State.VISIBLE;
++    }
+
++    // -------------------------------------------------------------------------
++    // Cromite compat
++    // -------------------------------------------------------------------------
+
++    /**
++     * Returns true if Cromite's "Toolbar Scroll Ablation" flag is enabled,
++     * meaning the user wants the toolbar always visible. In that case we
++     * must not hide the nav bar.
++     */
++    private boolean isToolbarScrollAblationActive() {
++        try {
++            return ChromeFeatureList.sAndroidToolbarScrollAblation.isEnabled();
++        } catch (Exception e) {
++            return false;
++        }
++    }
++}
+--

@@ -1,0 +1,366 @@
+From: Iltix <dev@iltix.de>
+Date: Sat, 19 Apr 2026 00:00:01 +0000
+Subject: Iltix Module Settings Infrastructure
+
+Adds the "Iltix Module" settings screen where all Iltix features can be
+toggled on or off independently. All features are enabled by default.
+
+The infrastructure consists of:
+- IltixModuleManager: singleton managing feature flag state via SharedPreferences
+- IltixModuleSettingsFragment: Settings fragment shown under "Iltix Module"
+- A hook into main_preferences.xml to surface the new settings entry
+- Iltix-specific string resources in a separate .grdp file
+
+This patch intentionally leaves upstream strings untouched. All Iltix UI
+strings live in:
+  chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ .../browser/iltix/IltixModuleManager.java     | 84 ++++++++++++++++++
+ .../iltix/settings/IltixModulePreference.java | 41 +++++++++
+ .../settings/IltixModuleSettingsFragment.java | 55 ++++++++++++
+ .../java/res/xml/iltix_module_preferences.xml | 50 +++++++++++
+ .../android/java/res/xml/main_preferences.xml |  7 ++
+ .../iltix_android_chrome_strings_grd/         |  0
+ .../Iltix-Module-Settings.grdp               | 49 +++++++++++
+ .../android_chrome_strings.grd               |  3 +
+ 8 files changed, 289 insertions(+)
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/IltixModuleManager.java
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModulePreference.java
+ create mode 100644 chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModuleSettingsFragment.java
+ create mode 100644 chrome/android/java/res/xml/iltix_module_preferences.xml
+ create mode 100644 chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/Iltix-Module-Settings.grdp
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/IltixModuleManager.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/IltixModuleManager.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/IltixModuleManager.java
+@@ -0,0 +1,84 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++
++import androidx.annotation.NonNull;
++
++/**
++ * Singleton that manages the enabled/disabled state of all Iltix modules.
++ *
++ * State is persisted in SharedPreferences so it survives app restarts.
++ * All modules default to ENABLED.
++ *
++ * Module keys are defined as public constants here so all referencing code
++ * uses a single source of truth.
++ */
++public class IltixModuleManager {
++    // -------------------------------------------------------------------------
++    // Module keys — add new modules here
++    // -------------------------------------------------------------------------
++    public static final String MODULE_THEME        = "iltix_module_theme";
++    public static final String MODULE_NAVIGATION   = "iltix_module_navigation";
++    public static final String MODULE_AUTOHIDE     = "iltix_module_autohide";
++
++    private static final String PREFS_NAME = "iltix_modules";
++
++    private static IltixModuleManager sInstance;
++    private final SharedPreferences mPrefs;
++
++    private IltixModuleManager(@NonNull Context context) {
++        mPrefs = context.getApplicationContext()
++                        .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
++    }
++
++    /**
++     * Initialises the singleton. Must be called once from Application#onCreate
++     * before any module checks are performed.
++     */
++    public static synchronized void init(@NonNull Context context) {
++        if (sInstance == null) {
++            sInstance = new IltixModuleManager(context);
++        }
++    }
++
++    /**
++     * Returns the singleton. Crashes if {@link #init} has not been called.
++     */
++    public static synchronized IltixModuleManager get() {
++        if (sInstance == null) {
++            throw new IllegalStateException("IltixModuleManager.init() must be called first");
++        }
++        return sInstance;
++    }
++
++    /**
++     * Returns true if the given module is enabled.
++     * Defaults to true (all modules enabled out of the box).
++     */
++    public boolean isEnabled(@NonNull String moduleKey) {
++        return mPrefs.getBoolean(moduleKey, true);
++    }
++
++    /**
++     * Enables or disables a module. Changes take effect after an app restart
++     * for most modules (UI initialised at startup).
++     */
++    public void setEnabled(@NonNull String moduleKey, boolean enabled) {
++        mPrefs.edit().putBoolean(moduleKey, enabled).apply();
++    }
++
++    // -------------------------------------------------------------------------
++    // Convenience static helpers — use these in module code
++    // -------------------------------------------------------------------------
++
++    /** Returns true if the Iltix Theme module is currently enabled. */
++    public static boolean isThemeEnabled() {
++        return sInstance != null && sInstance.isEnabled(MODULE_THEME);
++    }
++
++    /** Returns true if the Iltix Navigation module is currently enabled. */
++    public static boolean isNavigationEnabled() {
++        return sInstance != null && sInstance.isEnabled(MODULE_NAVIGATION);
++    }
++
++    /** Returns true if the Auto-Hide Navigation module is currently enabled. */
++    public static boolean isAutoHideEnabled() {
++        return sInstance != null && sInstance.isEnabled(MODULE_AUTOHIDE);
++    }
++}
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModulePreference.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModulePreference.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModulePreference.java
+@@ -0,0 +1,41 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.settings;
++
++import android.content.Context;
++import android.util.AttributeSet;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.preference.SwitchPreferenceCompat;
++
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
++
++/**
++ * A SwitchPreferenceCompat that automatically syncs its state to/from
++ * {@link IltixModuleManager}.
++ *
++ * Set {@code android:key} to one of the {@code IltixModuleManager.MODULE_*}
++ * constants in the preference XML. No additional Java wiring is needed.
++ */
++public class IltixModulePreference extends SwitchPreferenceCompat {
++    public IltixModulePreference(@NonNull Context ctx, @Nullable AttributeSet attrs,
++            int defStyle, int defStyleRes) {
++        super(ctx, attrs, defStyle, defStyleRes);
++        init();
++    }
++
++    public IltixModulePreference(@NonNull Context ctx, @Nullable AttributeSet attrs,
++            int defStyle) {
++        super(ctx, attrs, defStyle);
++        init();
++    }
++
++    public IltixModulePreference(@NonNull Context ctx, @Nullable AttributeSet attrs) {
++        super(ctx, attrs);
++        init();
++    }
++
++    private void init() {
++        setPersistent(false); // We manage persistence ourselves via IltixModuleManager
++        setChecked(IltixModuleManager.get().isEnabled(getKey() != null ? getKey() : ""));
++        setOnPreferenceChangeListener((pref, newVal) -> {
++            IltixModuleManager.get().setEnabled(pref.getKey(), (Boolean) newVal);
++            return true;
++        });
++    }
++}
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModuleSettingsFragment.java b/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModuleSettingsFragment.java
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModuleSettingsFragment.java
+@@ -0,0 +1,55 @@
++// Copyright 2026 The Iltix Authors. All rights reserved.
++// Use of this source code is governed by a GPL-2.0-or-later license.
++
++package org.chromium.chrome.browser.iltix.settings;
++
++import android.os.Bundle;
++
++import androidx.annotation.Nullable;
++import androidx.preference.PreferenceFragmentCompat;
++
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
++import org.chromium.components.browser_ui.settings.SettingsUtils;
++
++/**
++ * Settings fragment for "Iltix Module" — lists all toggleable Iltix features.
++ *
++ * Each preference in iltix_module_preferences.xml has its key set to one of
++ * the IltixModuleManager.MODULE_* constants so that IltixModulePreference
++ * can automatically route reads/writes through IltixModuleManager.
++ */
++public class IltixModuleSettingsFragment extends PreferenceFragmentCompat {
++
++    @Override
++    public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
++        SettingsUtils.addPreferencesFromResource(this, R.xml.iltix_module_preferences);
++    }
++
++    @Override
++    public void onResume() {
++        super.onResume();
++        // Refresh all preference states in case they changed while the screen was in background.
++        refreshAllPreferences();
++    }
++
++    private void refreshAllPreferences() {
++        refreshPref(IltixModuleManager.MODULE_THEME);
++        refreshPref(IltixModuleManager.MODULE_NAVIGATION);
++        refreshPref(IltixModuleManager.MODULE_AUTOHIDE);
++    }
++
++    private void refreshPref(String key) {
++        IltixModulePreference pref = findPreference(key);
++        if (pref != null) {
++            pref.setChecked(IltixModuleManager.get().isEnabled(key));
++        }
++    }
++}
+diff --git a/chrome/android/java/res/xml/iltix_module_preferences.xml b/chrome/android/java/res/xml/iltix_module_preferences.xml
+new file mode 100644
+--- /dev/null
++++ b/chrome/android/java/res/xml/iltix_module_preferences.xml
+@@ -0,0 +1,50 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Iltix Module Settings — DO NOT ADD UPSTREAM STRINGS HERE -->
++<!-- All string references must be defined in Iltix-Module-Settings.grdp -->
++<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto">
++
++    <!-- ================================================================== -->
++    <!--  Theme Module                                                        -->
++    <!-- ================================================================== -->
++    <PreferenceCategory
++        android:key="iltix_category_theme"
++        android:title="@string/iltix_module_category_appearance" />
++
++    <org.chromium.chrome.browser.iltix.settings.IltixModulePreference
++        android:key="iltix_module_theme"
++        android:title="@string/iltix_module_theme_title"
++        android:summary="@string/iltix_module_theme_summary"
++        android:defaultValue="true"
++        app:needRestart="true" />
++
++    <!-- ================================================================== -->
++    <!--  Navigation Module                                                   -->
++    <!-- ================================================================== -->
++    <PreferenceCategory
++        android:key="iltix_category_navigation"
++        android:title="@string/iltix_module_category_navigation" />
++
++    <org.chromium.chrome.browser.iltix.settings.IltixModulePreference
++        android:key="iltix_module_navigation"
++        android:title="@string/iltix_module_navigation_title"
++        android:summary="@string/iltix_module_navigation_summary"
++        android:defaultValue="true"
++        app:needRestart="true" />
++
++    <!-- ================================================================== -->
++    <!--  Auto-Hide Navigation Module                                         -->
++    <!-- ================================================================== -->
++    <org.chromium.chrome.browser.iltix.settings.IltixModulePreference
++        android:key="iltix_module_autohide"
++        android:title="@string/iltix_module_autohide_title"
++        android:summary="@string/iltix_module_autohide_summary"
++        android:defaultValue="true"
++        app:needRestart="false" />
++
++</PreferenceScreen>
+diff --git a/chrome/android/java/res/xml/main_preferences.xml b/chrome/android/java/res/xml/main_preferences.xml
+--- a/chrome/android/java/res/xml/main_preferences.xml
++++ b/chrome/android/java/res/xml/main_preferences.xml
+@@ -14,6 +14,13 @@ found in the LICENSE file.
+         android:order="0" />
++    <!-- Iltix Module Settings — added by Iltix-Module-Settings-Infrastructure.patch -->
++    <Preference
++        android:key="iltix_modules"
++        android:title="@string/iltix_settings_entry_title"
++        android:summary="@string/iltix_settings_entry_summary"
++        android:fragment="org.chromium.chrome.browser.iltix.settings.IltixModuleSettingsFragment"
++        android:order="5"
++        android:icon="@drawable/settings_icon" />
+     <PreferenceCategory
+         android:key="account_and_google_services_section"
+         android:order="1001"
+diff --git a/chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/Iltix-Module-Settings.grdp b/chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/Iltix-Module-Settings.grdp
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/Iltix-Module-Settings.grdp
+@@ -0,0 +1,49 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Iltix Module Settings strings. Added by Iltix-Module-Settings-Infrastructure.patch -->
++<!-- DO NOT modify upstream strings files. All Iltix strings live here. -->
++<grit-part>
++    <!-- Settings entry in main settings screen -->
++    <message name="IDS_ILTIX_SETTINGS_ENTRY_TITLE" desc="Title for Iltix Module settings entry in main settings screen.">
++        Iltix Module
++    </message>
++    <message name="IDS_ILTIX_SETTINGS_ENTRY_SUMMARY" desc="Summary for Iltix Module settings entry in main settings screen.">
++        Iltix Browser features and customisation
++    </message>
++
++    <!-- Category: Appearance -->
++    <message name="IDS_ILTIX_MODULE_CATEGORY_APPEARANCE" desc="Category header for appearance-related Iltix modules.">
++        Appearance
++    </message>
++
++    <!-- Theme module -->
++    <message name="IDS_ILTIX_MODULE_THEME_TITLE" desc="Title for the Iltix Theme module toggle.">
++        Iltix Theme
++    </message>
++    <message name="IDS_ILTIX_MODULE_THEME_SUMMARY" desc="Summary for the Iltix Theme module toggle.">
++        Liquid Glass effect on the navigation bar, floating rounded bar, transparent system bars
++    </message>
++
++    <!-- Category: Navigation -->
++    <message name="IDS_ILTIX_MODULE_CATEGORY_NAVIGATION" desc="Category header for navigation-related Iltix modules.">
++        Navigation
++    </message>
++
++    <!-- Navigation module -->
++    <message name="IDS_ILTIX_MODULE_NAVIGATION_TITLE" desc="Title for the Iltix Navigation module toggle.">
++        Iltix Navigation
++    </message>
++    <message name="IDS_ILTIX_MODULE_NAVIGATION_SUMMARY" desc="Summary for the Iltix Navigation module toggle.">
++        Separate URL bar with back, forward, reload, home, extensions, tabs and menu buttons
++    </message>
++
++    <!-- Auto-Hide Navigation module -->
++    <message name="IDS_ILTIX_MODULE_AUTOHIDE_TITLE" desc="Title for the Auto-Hide Navigation module toggle.">
++        Auto-Hide Navigation
++    </message>
++    <message name="IDS_ILTIX_MODULE_AUTOHIDE_SUMMARY" desc="Summary for the Auto-Hide Navigation module toggle.">
++        Hides the navigation bar when scrolling down, shows it again when scrolling up
++    </message>
++</grit-part>
+diff --git a/chrome/browser/ui/android/strings/android_chrome_strings.grd b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+--- a/chrome/browser/ui/android/strings/android_chrome_strings.grd
++++ b/chrome/browser/ui/android/strings/android_chrome_strings.grd
+@@ -1,5 +1,8 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <grit current_release="1" latest_public_release="0" output_files_only="false">
++  <!-- Iltix strings (must come before the cromite_android_chrome_strings_grd include) -->
++  <xi:include href="iltix_android_chrome_strings_grd/Iltix-Module-Settings.grdp"
++              xmlns:xi="http://www.w3.org/2001/XInclude" />
+   <xi:include href="cromite_android_chrome_strings_grd/Toolbar-Scroll-Ablation-flag.grdp"
+               xmlns:xi="http://www.w3.org/2001/XInclude" />
+--
