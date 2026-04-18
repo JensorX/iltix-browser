@@ -7,10 +7,6 @@ on:
   # Manuell triggern: Actions → "Build Iltix Browser" → Run workflow
   workflow_dispatch:
     inputs:
-      cromite_sha:
-        description: 'uazo/cromite SHA (leave empty = use latest master)'
-        required: false
-        default: ''
       docker_image:
         description: 'Docker image to use (e.g. uazo/cromite-build:147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827)'
         required: false
@@ -54,35 +50,41 @@ jobs:
         with:
           ref: iltix
 
-      - name: Resolve Cromite SHA and Chromium version
+      - name: Resolve Latest Cromite Build Image
         id: resolve
         run: |
-          # If no SHA was provided, use the latest uazo/cromite master
-          if [ -z "${{ github.event.inputs.cromite_sha }}" ]; then
-            CROMITE_SHA=$(curl -s "https://api.github.com/repos/uazo/cromite/commits/master" \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'])")
-          else
-            CROMITE_SHA="${{ github.event.inputs.cromite_sha }}"
+          echo "[iltix] Fetching latest tags from Docker Hub..."
+          
+          # Hole den aktuellsten Tag-Namen via Docker Hub API (sortiert nach letztem Update)
+          LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/uazo/cromite-build/tags/?page_size=1&ordering=last_updated" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['name'])")
+          
+          if [ -z "$LATEST_TAG" ]; then
+            echo "[ERROR] Could not resolve any tag from Docker Hub"
+            exit 1
           fi
 
-          # Read the Chromium version from our repo (tracks upstream Cromite)
-          CHROMIUM_VERSION=$(cat build/RELEASE)
+          DOCKER_IMAGE="uazo/cromite-build:${LATEST_TAG}"
 
-          DOCKER_IMAGE="uazo/cromite-build:${CHROMIUM_VERSION}-${CROMITE_SHA}"
-
-          if [ -n "${{ github.event.inputs.docker_image }}" ]; then
+          # Falls manuell etwas eingegeben wurde, hat das Vorrang
+          if [ -n "${{ github.event.inputs.docker_image }}" ] && [ "${{ github.event.inputs.docker_image }}" != "auto" ]; then
             echo "[iltix] Using manually specified Docker image: ${{ github.event.inputs.docker_image }}"
             DOCKER_IMAGE="${{ github.event.inputs.docker_image }}"
           fi
 
+          # Extrahiere Version und SHA aus dem Tag (Format: VERSION-SHA)
+          # Beispiel: 147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827
+          VERSION=$(echo $LATEST_TAG | cut -s -d'-' -f1 || echo "unknown")
+          CROMITE_SHA=$(echo $LATEST_TAG | cut -s -d'-' -f2 || echo "unknown")
+
           echo "cromite_sha=${CROMITE_SHA}"         >> $GITHUB_OUTPUT
-          echo "chromium_version=${CHROMIUM_VERSION}" >> $GITHUB_OUTPUT
+          echo "chromium_version=${VERSION}"      >> $GITHUB_OUTPUT
           echo "docker_image=${DOCKER_IMAGE}"        >> $GITHUB_OUTPUT
 
-          echo "--- Resolved ---"
-          echo "  CROMITE_SHA:       ${CROMITE_SHA}"
-          echo "  CHROMIUM_VERSION:  ${CHROMIUM_VERSION}"
+          echo "--- Resolved Latest ---"
           echo "  DOCKER_IMAGE:      ${DOCKER_IMAGE}"
+          echo "  CHROMIUM_VERSION:  ${VERSION}"
+          echo "  CROMITE_SHA:       ${CROMITE_SHA}"
 
   # ─── Phase 2: Build ─────────────────────────────────────────────────────────
   build:
