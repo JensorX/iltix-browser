@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_DIR="${SCRIPT_DIR}/../../build/patches"
 
 ILTIX_PATCHES=(
+    "Iltix-Module-Hooks.patch"
     "Iltix-Module-AutoHideNavigation.patch"
     "Iltix-Module-Navigation.patch"
     "Iltix-Module-Theme.patch"

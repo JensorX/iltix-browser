@@ -21,6 +21,7 @@ ILTIX_PATCHES=(
     "Iltix-Module-Theme.patch"
     "Iltix-Module-Navigation.patch"
     "Iltix-Module-AutoHideNavigation.patch"
+    "Iltix-Module-Hooks.patch"
 )
 
 echo "========================================================"

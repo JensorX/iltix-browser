@@ -340,3 +340,4 @@ Iltix-Module-Settings-Infrastructure.patch
 Iltix-Module-Theme.patch
 Iltix-Module-Navigation.patch
 Iltix-Module-AutoHideNavigation.patch
+Iltix-Module-Hooks.patch

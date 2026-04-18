@@ -1,0 +1,157 @@
+From: Iltix <dev@iltix.de>
+Date: Sat, 19 Apr 2026 00:00:05 +0000
+Subject: Iltix Module Hooks — wire Theme, Navigation and AutoHide into Chromium
+
+Adds the minimal call-sites that activate Iltix modules inside existing
+Chromium/Cromite source files. All calls are guarded by IltixModuleManager
+and are no-ops when the respective module is disabled.
+
+Changes (minimal upstream footprint):
+
+1. ChromeBrowserInitializer — init IltixModuleManager early in pre-native
+   startup so all subsequent module checks work without null-pointer risk.
+   Hook pattern matches existing ChromeSharedPreferences.warmUp() call from
+   Add-option-to-force-tablet-UI.patch.
+
+2. ChromeTabbedActivity — call IltixThemeModule.applyWindowTheme() at the
+   start of onCreate, before the super call, so window flags are set before
+   the first view is measured.
+   Hook pattern matches existing ApplicationLifetime import from
+   Add-exit-menu-item.patch.
+
+3. BottomControlsCoordinator — after the bottom toolbar view is fully
+   constructed, wire up IltixNavBarCoordinator (Navigation module) and
+   IltixThemeModule.applyNavBarGlass() (Theme module) on the container.
+
+4. BottomControlsMediator — store the auto-hide controller reference and
+   forward the topOffset scroll delta to IltixAutoHideController when
+   the AutoHide module is enabled.
+
+Total upstream lines added: ~8 additions across 4 files.
+All new class references are in org.chromium.chrome.browser.iltix.*
+
+Requires: Iltix-Module-Settings-Infrastructure.patch
+Requires: Iltix-Module-Theme.patch
+Requires: Iltix-Module-Navigation.patch
+Requires: Iltix-Module-AutoHideNavigation.patch
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+ .../browser/init/ChromeBrowserInitializer.java        |  4 ++
+ .../chrome/browser/ChromeTabbedActivity.java          |  6 +++
+ .../toolbar/bottom/BottomControlsCoordinator.java     | 14 ++++++
+ .../toolbar/bottom/BottomControlsMediator.java        |  9 ++++
+ 4 files changed, 33 insertions(+)
+
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java b/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrowserInitializer.java
+@@ -18,6 +18,8 @@ import org.chromium.base.task.TaskTraits;
+ import org.chromium.build.annotations.NullMarked;
+ import org.chromium.build.annotations.Nullable;
+ import org.chromium.chrome.browser.flags.ChromeSwitches;
++// Iltix: initialise module manager (see Iltix-Module-Hooks.patch)
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
+ import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+ import org.chromium.chrome.browser.profiles.ProfileManager;
+ import org.chromium.chrome.browser.signin.SigninCheckerProvider;
+@@ -110,6 +112,8 @@ public class ChromeBrowserInitializer {
+     public void handlePreNativeStartupAndLoadLibraries(final BrowserParts parts) {
+         ThreadUtils.checkUiThread();
+         if (parts.isActivityFinishingOrDestroyed()) return;
++        // Iltix: init module manager before any module isEnabled() check is made
++        IltixModuleManager.init(ContextUtils.getApplicationContext());
+         ChromeSharedPreferences.warmUp();
+         ProcessInitializationHandler.getInstance().initializePreNative();
+diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+--- a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
++++ b/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
+@@ -395,6 +395,8 @@ import java.util.Set;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.function.Supplier;
+ 
++// Iltix: Theme window hook (see Iltix-Module-Hooks.patch)
++import org.chromium.chrome.browser.iltix.theme.IltixThemeModule;
+ import org.chromium.chrome.browser.lifetime.ApplicationLifetime;
+ 
+ /**
+@@ -555,6 +557,10 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+     @Override
+     protected void onCreate(@Nullable Bundle savedInstanceState) {
++        // Iltix Theme: transparent system bars + edge-to-edge before first layout.
++        // Must be called before super.onCreate so window flags are applied early.
++        // No-op when module is disabled.
++        IltixThemeModule.applyWindowTheme(this);
+         super.onCreate(savedInstanceState);
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java
+@@ -35,6 +35,11 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+ import org.chromium.ui.resources.ResourceManager;
+ import org.chromium.ui.resources.dynamics.ViewResourceAdapter;
+ import org.chromium.ui.widget.Toast;
++// Iltix: Navigation + Theme module hooks (see Iltix-Module-Hooks.patch)
++import org.chromium.chrome.browser.iltix.navigation.IltixNavBarCoordinator;
++import org.chromium.chrome.browser.iltix.theme.IltixThemeModule;
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
+ import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
+ import org.chromium.chrome.browser.tab.Tab;
+ 
+@@ -92,6 +97,8 @@ public class BottomControlsCoordinator implements BackPressHandler {
+      * @param readAloudRestoringSupplier Supplier that returns true if Read Aloud is currently
+      *     restoring its player, e.g. after theme change.
+      * @param topUiThemeColorProvider {@link ThemeColorProvider} for top UI.
++     * @param topUiThemeColorProvider {@link ThemeColorProvider} for top UI.
+      * @param tabSupplier Activity tab supplier.
+      */
+     @SuppressLint("CutPasteId") // Not actually cut and paste since it's View vs ViewGroup.
+@@ -171,6 +178,13 @@ public class BottomControlsCoordinator implements BackPressHandler {
+                             mMediator.setBottomControlsVisible(isVisible);
+                         }
+                     },
+-                    root::onModelTokenChange,
++                    root::onModelTokenChange,
+                     topUiThemeColorProvider, tabSupplier);
+             mContentDelegateWrapper.set(contentDelegate);
+         },
+         mContentDelegateSupplier,
++        // Iltix Navigation + Theme: attach 7-button nav bar and/or glass theme to bottom container.
++        // Both calls are no-ops when the respective module is disabled.
++        mIltixNavCoordinator = new IltixNavBarCoordinator(
++                mContext, mTabModelSelector, mAppMenuHandler, mActivityTabSupplier);
++        mIltixNavCoordinator.attach((android.view.ViewGroup) root.getView(), /* replaceExisting= */ false);
++        IltixThemeModule.applyNavBarGlass(root.getView(), /* isDark= */ false);
+diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsMediator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsMediator.java
+--- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsMediator.java
++++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsMediator.java
+@@ -27,6 +27,9 @@ import org.chromium.ui.KeyboardVisibilityDelegate;
+ import org.chromium.ui.base.WindowAndroid;
+ import org.chromium.ui.edge_to_edge.EdgeToEdgeSupplier.ChangeObserver;
+ import org.chromium.ui.modelutil.PropertyModel;
++// Iltix AutoHide hook (see Iltix-Module-Hooks.patch)
++import org.chromium.chrome.browser.iltix.autohide.IltixAutoHideController;
++import org.chromium.chrome.browser.iltix.IltixModuleManager;
+ import org.chromium.chrome.browser.flags.ChromeFeatureList;
+ 
+ import java.util.function.Supplier;
+@@ -185,6 +188,9 @@ class BottomControlsMediator
+         mTabObscuringHandler.removeObserver(this);
+     }
+ 
++    // Iltix: AutoHide controller — set by BottomControlsCoordinator after the nav bar view exists.
++    @Nullable IltixAutoHideController mIltixAutoHideController;
++
+     @Override
+     public void onControlsOffsetChanged(
+             int topOffset,
+@@ -196,4 +202,8 @@ class BottomControlsMediator
+             boolean isVisibilityForced) {
+         mModel.set(BottomControlsProperties.TOPCONTROLSMINHEIGHT_OFFSET, topControlsMinHeightOffset);
+         mModel.set(BottomControlsProperties.Y_OFFSET, -topOffset);
++        // Iltix AutoHide: forward the top offset as scroll delta to the hide/show controller.
++        if (IltixModuleManager.isAutoHideEnabled() && mIltixAutoHideController != null) {
++            mIltixAutoHideController.onScrollOffsetChanged(-topOffset);
++        }
+     }
+--
