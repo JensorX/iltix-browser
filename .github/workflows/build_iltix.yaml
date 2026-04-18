@@ -4,13 +4,12 @@ permissions:
   contents: write
 
 on:
-  # Manuell triggern: Actions → "Build Iltix Browser" → Run workflow
   workflow_dispatch:
     inputs:
       docker_image:
         description: 'Docker image to use (e.g. uazo/cromite-build:147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827)'
         required: false
-        default: 'uazo/cromite-build:147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827'
+        default: 'auto'
       arch:
         description: 'Android architecture [arm64/arm/x64]'
         required: true
@@ -20,7 +19,6 @@ on:
         required: true
         default: 'false'
 
-  # Automatisch bei jedem Push auf den iltix-Branch der Patches oder Build-Configs ändert
   push:
     branches:
       - iltix
@@ -36,7 +34,6 @@ env:
   TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
 
 jobs:
-  # ─── Phase 1: Ermittle das Cromite Docker-Image ─────────────────────────────
   setup:
     name: "Resolve Cromite build image"
     runs-on: ubuntu-latest
@@ -55,25 +52,20 @@ jobs:
         run: |
           echo "[iltix] Fetching latest tags from Docker Hub..."
           
-          # Hole den aktuellsten Tag-Namen via Docker Hub API (sortiert nach letztem Update)
-          LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/uazo/cromite-build/tags/?page_size=1&ordering=last_updated" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['name'])")
+          if [ "${{ github.event.inputs.docker_image }}" == "auto" ] || [ -z "${{ github.event.inputs.docker_image }}" ]; then
+            LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/uazo/cromite-build/tags/?page_size=1&ordering=last_updated" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['name'])")
+            DOCKER_IMAGE="uazo/cromite-build:${LATEST_TAG}"
+          else
+            DOCKER_IMAGE="${{ github.event.inputs.docker_image }}"
+            LATEST_TAG=$(echo $DOCKER_IMAGE | cut -d':' -f2)
+          fi
           
           if [ -z "$LATEST_TAG" ]; then
-            echo "[ERROR] Could not resolve any tag from Docker Hub"
+            echo "[ERROR] Could not resolve Docker tag"
             exit 1
           fi
 
-          DOCKER_IMAGE="uazo/cromite-build:${LATEST_TAG}"
-
-          # Falls manuell etwas eingegeben wurde, hat das Vorrang
-          if [ -n "${{ github.event.inputs.docker_image }}" ] && [ "${{ github.event.inputs.docker_image }}" != "auto" ]; then
-            echo "[iltix] Using manually specified Docker image: ${{ github.event.inputs.docker_image }}"
-            DOCKER_IMAGE="${{ github.event.inputs.docker_image }}"
-          fi
-
-          # Extrahiere Version und SHA aus dem Tag (Format: VERSION-SHA)
-          # Beispiel: 147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827
           VERSION=$(echo $LATEST_TAG | cut -s -d'-' -f1 || echo "unknown")
           CROMITE_SHA=$(echo $LATEST_TAG | cut -s -d'-' -f2 || echo "unknown")
 
@@ -81,20 +73,15 @@ jobs:
           echo "chromium_version=${VERSION}"      >> $GITHUB_OUTPUT
           echo "docker_image=${DOCKER_IMAGE}"        >> $GITHUB_OUTPUT
 
-          echo "--- Resolved Latest ---"
-          echo "  DOCKER_IMAGE:      ${DOCKER_IMAGE}"
-          echo "  CHROMIUM_VERSION:  ${VERSION}"
-          echo "  CROMITE_SHA:       ${CROMITE_SHA}"
-
-  # ─── Phase 2: Build ─────────────────────────────────────────────────────────
   build:
     name: "Build Iltix Browser (${{ github.event.inputs.arch || 'arm64' }})"
     runs-on: ubuntu-latest
     needs: setup
-    timeout-minutes: 600   # 10h — Chromium builds take time
+    timeout-minutes: 720 # 12h
 
     container:
       image: ${{ needs.setup.outputs.docker_image }}
+      options: --user root
       env:
         WORKSPACE: /home/lg/working_dir
         HOME: /home/lg/working_dir
@@ -102,149 +89,102 @@ jobs:
         TARGET_OS: android
 
     steps:
-      # ── 1. Iltix-Repo auschecken ───────────────────────────────────────────
       - name: Checkout Iltix Browser repo
         uses: actions/checkout@v4
         with:
           ref: iltix
           path: iltix-browser
 
-      # ── 2. GN args für Iltix bereitstellen ────────────────────────────────
-      - name: Copy Iltix GN args
+      - name: Fix permissions and Git config
         run: |
-          cp $GITHUB_WORKSPACE/iltix-browser/build/cromite.gn_args \
-             $WORKSPACE/iltix.gn_args
-          echo "[iltix] GN args written to $WORKSPACE/iltix.gn_args"
-          echo "--- Iltix package name ---"
-          grep "chrome_public_manifest_package" $WORKSPACE/iltix.gn_args
+          # Sicherstellen, dass der User 'lg' Zugriff auf das ausgecheckte Repo hat
+          chown -R lg:lg $GITHUB_WORKSPACE/iltix-browser
+          
+          # Workspace im Container vorbereiten (wir sind root, also kein sudo nötig)
+          chown lg:lg $WORKSPACE
+          chown lg:lg $WORKSPACE/chromium/src
 
-      # ── 3. Iltix-Patches auf Chromium-Quellcode anwenden ──────────────────
-      - name: Apply Iltix patches
+          # Git Konfiguration für User 'lg' (für git am)
+          sudo -u lg git config --global --add safe.directory "*"
+          sudo -u lg git config --global user.email "dev@iltix.de"
+          sudo -u lg git config --global user.name "Iltix Build"
+
+      - name: Apply Iltix customizations
+        shell: bash
         run: |
-          set -euo pipefail
-
-          CHROMIUM_SRC="$WORKSPACE/chromium/src"
-          PATCHES_DIR="$GITHUB_WORKSPACE/iltix-browser/build/patches"
-          PATCHES_LIST="$GITHUB_WORKSPACE/iltix-browser/build/cromite_patches_list.txt"
-
-          echo "[iltix] Applying Iltix-specific patches on top of Cromite..."
-          cd "$CHROMIUM_SRC"
-
-          # Only apply the Iltix-* patches (Cromite ones are already baked into the Docker image)
-          while IFS= read -r patch; do
-            # Skip comments and empty lines
-            [[ "$patch" =~ ^# || -z "$patch" ]] && continue
-
-            # Only process Iltix-* patches (not Cromite ones already applied)
-            if [[ "$patch" == Iltix-* ]]; then
-              patch_file="$PATCHES_DIR/$patch"
-              if [ ! -f "$patch_file" ]; then
-                echo "[WARN] Patch not found: $patch — skipping"
-                continue
+          # Wir führen die kritischen Schritte als User 'lg' aus, 
+          # da Chromium-Tools oft nicht als root laufen wollen.
+          sudo -u lg bash <<EOF
+            set -euo pipefail
+            export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:\$PATH"
+            export HOME=$WORKSPACE
+            
+            cd $WORKSPACE/chromium/src
+            
+            echo "[iltix] Applying patches..."
+            while IFS= read -r patch; do
+              [[ "\$patch" =~ ^# || -z "\$patch" ]] && continue
+              if [[ "\$patch" == Iltix-* ]]; then
+                patch_file="$GITHUB_WORKSPACE/iltix-browser/build/patches/\$patch"
+                if [ -f "\$patch_file" ]; then
+                  echo "-> Applying \$patch"
+                  git am "\$patch_file" || { echo "[ERROR] Failed to apply \$patch"; git am --abort; exit 1; }
+                else
+                  echo "[WARN] Patch not found: \$patch"
+                fi
               fi
-              echo "[iltix] Applying: $patch"
-              git am "$patch_file" || {
-                echo "[ERROR] Failed to apply: $patch"
-                git am --abort 2>/dev/null || true
-                exit 1
-              }
-            fi
-          done < "$PATCHES_LIST"
+            done < "$GITHUB_WORKSPACE/iltix-browser/build/cromite_patches_list.txt"
 
-          echo "[iltix] All Iltix patches applied successfully."
+            echo "[iltix] Applying icons..."
+            CHROMIUM_SRC="$WORKSPACE/chromium/src" \
+            ILTIX_BROWSER_REPO="$GITHUB_WORKSPACE/iltix-browser" \
+            bash "$GITHUB_WORKSPACE/iltix-browser/tools/iltix/apply_icons.sh"
+          EOF
 
-      # ── 4. Iltix-Icons in den Chromium-Quellcode kopieren ────────────────
-      - name: Apply Iltix icons
+      - name: GN Gen and Build
+        shell: bash
         run: |
-          CHROMIUM_SRC="$WORKSPACE/chromium/src" \
-          ILTIX_BROWSER_REPO="$GITHUB_WORKSPACE/iltix-browser" \
-          bash "$GITHUB_WORKSPACE/iltix-browser/tools/iltix/apply_icons.sh"
+          sudo -u lg bash <<EOF
+            set -euo pipefail
+            export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:\$PATH"
+            export HOME=$WORKSPACE
+            export VPYTHON_BYPASS_CONFIRM_INSTALL=1
+            
+            cd $WORKSPACE/chromium/src
+            
+            echo "[iltix] Generating GN..."
+            gn gen --args="target_os=\"android\" \$(cat $GITHUB_WORKSPACE/iltix-browser/build/cromite.gn_args) target_cpu=\"${{ env.ARCH }}\"" "out/${{ env.ARCH }}"
+            
+            echo "[iltix] Starting Build..."
+            vpython3 \$WORKSPACE/depot_tools/siso.py ninja -C "out/${{ env.ARCH }}" chrome_public_apk --offline
+          EOF
 
-      # ── 5. GN args generieren ─────────────────────────────────────────────
-      - name: Generate GN args
+      - name: Collect APK
         run: |
-          set -euo pipefail
-          cd $WORKSPACE/chromium/src
-
-          ARCH="${{ env.ARCH }}"
-          OUT_DIR="out/${ARCH}"
-
-          echo "[iltix] Generating GN build for arch=${ARCH} → ${OUT_DIR}"
-
-          gn gen \
-            --args="target_os=\"android\" $(cat $WORKSPACE/iltix.gn_args) target_cpu=\"${ARCH}\"" \
-            "${OUT_DIR}" || true
-
-          echo "--- GN args summary ---"
-          gn args "${OUT_DIR}/" --list --short 2>/dev/null | grep -E "package|brand|debug" || true
-
-      # ── 6. APK bauen ──────────────────────────────────────────────────────
-      - name: Build chrome_public_apk
-        run: |
-          set -euo pipefail
-          cd $WORKSPACE/chromium/src
-
-          ARCH="${{ env.ARCH }}"
-          OUT_DIR="out/${ARCH}"
-
-          echo "[iltix] Building chrome_public_apk for arch=${ARCH}..."
-
-          PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH" \
-          vpython3 $WORKSPACE/depot_tools/siso.py ninja \
-            -C "${OUT_DIR}" \
-            chrome_public_apk \
-            --offline
-
-          echo "[iltix] Build complete!"
-          ls -lh "${OUT_DIR}/apks/"
-
-      # ── 7. APK umbenennen und als Artifact hochladen ──────────────────────
-      - name: Collect artifacts
-        run: |
-          ARCH="${{ env.ARCH }}"
-          OUT_DIR="$WORKSPACE/chromium/src/out/${ARCH}"
           VERSION=$(cat $GITHUB_WORKSPACE/iltix-browser/build/RELEASE)
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          APK_NAME="IltixBrowser-${VERSION}-${{ env.ARCH }}-${SHORT_SHA}.apk"
+          
+          # Die APK liegt tief im Container-Workspace
+          cp $WORKSPACE/chromium/src/out/${{ env.ARCH }}/apks/ChromePublic.apk /tmp/$APK_NAME
+          
+          echo "APK_NAME=$APK_NAME" >> $GITHUB_ENV
+          echo "APK_PATH=/tmp/$APK_NAME" >> $GITHUB_ENV
 
-          APK_NAME="IltixBrowser-${VERSION}-${ARCH}-${SHORT_SHA}.apk"
-
-          cp "${OUT_DIR}/apks/ChromePublic.apk" "/tmp/${APK_NAME}"
-
-          echo "APK_NAME=${APK_NAME}"   >> $GITHUB_ENV
-          echo "APK_PATH=/tmp/${APK_NAME}" >> $GITHUB_ENV
-          echo "VERSION=${VERSION}"     >> $GITHUB_ENV
-
-          echo "[iltix] APK ready: ${APK_NAME} ($(du -sh /tmp/${APK_NAME} | cut -f1))"
-
-      - name: Upload APK artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APK_NAME }}
           path: ${{ env.APK_PATH }}
-          retention-days: 14   # APK 14 Tage in GitHub verfügbar
+          retention-days: 7
 
-      # ── 8. (Optional) GitHub Release erstellen bei Push auf iltix-Branch ──
-      - name: Create GitHub Release (on push to iltix branch)
+      - name: Create Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "iltix-${{ env.VERSION }}-${{ github.sha }}"
-          name: "Iltix Browser ${{ env.VERSION }}"
+          tag_name: "iltix-${{ github.sha }}"
+          name: "Iltix Browser Build"
           draft: true
-          prerelease: true
           files: ${{ env.APK_PATH }}
-          body: |
-            **Iltix Browser** — automatischer Build
-            
-            - Chromium: `${{ env.VERSION }}`
-            - Commit: `${{ github.sha }}`
-            - Architektur: `${{ env.ARCH }}`
-            
-            **Aktivierte Iltix Module (alle per Default an):**
-            - ✅ Iltix Theme (Liquid Glass Effekt)
-            - ✅ Iltix Navigation (7-Button Nav-Bar)
-            - ✅ Auto-Hide Navigation
-            
-            ⚠️ Dies ist ein Entwicklungs-Build. Nicht für Produktion gedacht.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
