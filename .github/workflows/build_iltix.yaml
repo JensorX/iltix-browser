@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       docker_image:
-        description: 'Docker image to use (e.g. uazo/cromite-build:147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827)'
+        description: 'Docker image to use (e.g. uazo/cromite-build:...)'
         required: false
         default: 'auto'
       arch:
@@ -32,16 +32,29 @@ on:
 env:
   ARCH: ${{ github.event.inputs.arch || 'arm64' }}
   TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
+  http_proxy: ""
+  https_proxy: ""
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
 
 jobs:
   setup:
     name: "Resolve Cromite build image"
     runs-on: ubuntu-latest
+
     outputs:
       cromite_sha: ${{ steps.resolve.outputs.cromite_sha }}
       chromium_version: ${{ steps.resolve.outputs.chromium_version }}
       docker_image: ${{ steps.resolve.outputs.docker_image }}
+
     steps:
+      - name: Disable proxy (critical fix)
+        run: |
+          echo "[iltix] Disabling proxy environment..."
+          unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY || true
+          git config --global --unset http.proxy || true
+          git config --global --unset https.proxy || true
+
       - name: Checkout Iltix repo
         uses: actions/checkout@v4
         with:
@@ -51,140 +64,18 @@ jobs:
         id: resolve
         run: |
           echo "[iltix] Fetching latest tags from Docker Hub..."
-          
+
           if [ "${{ github.event.inputs.docker_image }}" == "auto" ] || [ -z "${{ github.event.inputs.docker_image }}" ]; then
             LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/uazo/cromite-build/tags/?page_size=1&ordering=last_updated" \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['results'][0]['name'])")
+
             DOCKER_IMAGE="uazo/cromite-build:${LATEST_TAG}"
           else
             DOCKER_IMAGE="${{ github.event.inputs.docker_image }}"
             LATEST_TAG=$(echo $DOCKER_IMAGE | cut -d':' -f2)
           fi
-          
-          if [ -z "$LATEST_TAG" ]; then
-            echo "[ERROR] Could not resolve Docker tag"
-            exit 1
-          fi
 
-          VERSION=$(echo $LATEST_TAG | cut -s -d'-' -f1 || echo "unknown")
-          CROMITE_SHA=$(echo $LATEST_TAG | cut -s -d'-' -f2 || echo "unknown")
+          echo "docker_image=$DOCKER_IMAGE" >> $GITHUB_OUTPUT
+          echo "cromite_sha=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-          echo "cromite_sha=${CROMITE_SHA}"         >> $GITHUB_OUTPUT
-          echo "chromium_version=${VERSION}"      >> $GITHUB_OUTPUT
-          echo "docker_image=${DOCKER_IMAGE}"        >> $GITHUB_OUTPUT
-
-  build:
-    name: "Build Iltix Browser (${{ github.event.inputs.arch || 'arm64' }})"
-    runs-on: ubuntu-latest
-    needs: setup
-    timeout-minutes: 720 # 12h
-
-    container:
-      image: ${{ needs.setup.outputs.docker_image }}
-      options: --user root
-      env:
-        WORKSPACE: /home/lg/working_dir
-        HOME: /home/lg/working_dir
-        TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
-        TARGET_OS: android
-
-    steps:
-      - name: Checkout Iltix Browser repo
-        uses: actions/checkout@v4
-        with:
-          ref: iltix
-          path: iltix-browser
-
-      - name: Fix permissions and Git config
-        run: |
-          # Sicherstellen, dass der User 'lg' Zugriff auf das ausgecheckte Repo hat
-          chown -R lg:lg $GITHUB_WORKSPACE/iltix-browser
-          
-          # Workspace im Container vorbereiten (wir sind root, also kein sudo nötig)
-          chown lg:lg $WORKSPACE
-          chown lg:lg $WORKSPACE/chromium/src
-
-          # Git Konfiguration für User 'lg' (für git am)
-          sudo -u lg git config --global --add safe.directory "*"
-          sudo -u lg git config --global user.email "dev@iltix.de"
-          sudo -u lg git config --global user.name "Iltix Build"
-
-      - name: Apply Iltix customizations
-        shell: bash
-        run: |
-          # Wir führen die kritischen Schritte als User 'lg' aus, 
-          # da Chromium-Tools oft nicht als root laufen wollen.
-          sudo -u lg bash <<EOF
-            set -euo pipefail
-            export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:\$PATH"
-            export HOME=$WORKSPACE
-            
-            cd $WORKSPACE/chromium/src
-            
-            echo "[iltix] Applying patches..."
-            while IFS= read -r patch; do
-              [[ "\$patch" =~ ^# || -z "\$patch" ]] && continue
-              if [[ "\$patch" == Iltix-* ]]; then
-                patch_file="$GITHUB_WORKSPACE/iltix-browser/build/patches/\$patch"
-                if [ -f "\$patch_file" ]; then
-                  echo "-> Applying \$patch"
-                  git am "\$patch_file" || { echo "[ERROR] Failed to apply \$patch"; git am --abort; exit 1; }
-                else
-                  echo "[WARN] Patch not found: \$patch"
-                fi
-              fi
-            done < "$GITHUB_WORKSPACE/iltix-browser/build/cromite_patches_list.txt"
-
-            echo "[iltix] Applying icons..."
-            CHROMIUM_SRC="$WORKSPACE/chromium/src" \
-            ILTIX_BROWSER_REPO="$GITHUB_WORKSPACE/iltix-browser" \
-            bash "$GITHUB_WORKSPACE/iltix-browser/tools/iltix/apply_icons.sh"
-          EOF
-
-      - name: GN Gen and Build
-        shell: bash
-        run: |
-          sudo -u lg bash <<EOF
-            set -euo pipefail
-            export PATH="$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:\$PATH"
-            export HOME=$WORKSPACE
-            export VPYTHON_BYPASS_CONFIRM_INSTALL=1
-            
-            cd $WORKSPACE/chromium/src
-            
-            echo "[iltix] Generating GN..."
-            gn gen --args="target_os=\"android\" \$(cat $GITHUB_WORKSPACE/iltix-browser/build/cromite.gn_args) target_cpu=\"${{ env.ARCH }}\"" "out/${{ env.ARCH }}"
-            
-            echo "[iltix] Starting Build..."
-            vpython3 \$WORKSPACE/depot_tools/siso.py ninja -C "out/${{ env.ARCH }}" chrome_public_apk --offline
-          EOF
-
-      - name: Collect APK
-        run: |
-          VERSION=$(cat $GITHUB_WORKSPACE/iltix-browser/build/RELEASE)
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
-          APK_NAME="IltixBrowser-${VERSION}-${{ env.ARCH }}-${SHORT_SHA}.apk"
-          
-          # Die APK liegt tief im Container-Workspace
-          cp $WORKSPACE/chromium/src/out/${{ env.ARCH }}/apks/ChromePublic.apk /tmp/$APK_NAME
-          
-          echo "APK_NAME=$APK_NAME" >> $GITHUB_ENV
-          echo "APK_PATH=/tmp/$APK_NAME" >> $GITHUB_ENV
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APK_NAME }}
-          path: ${{ env.APK_PATH }}
-          retention-days: 7
-
-      - name: Create Release
-        if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "iltix-${{ github.sha }}"
-          name: "Iltix Browser Build"
-          draft: true
-          files: ${{ env.APK_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "[iltix] Using image: $DOCKER_IMAGE"
