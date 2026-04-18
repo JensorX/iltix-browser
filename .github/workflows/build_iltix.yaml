@@ -33,12 +33,6 @@ env:
   ARCH: ${{ github.event.inputs.arch || 'arm64' }}
   TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
 
-  # 🔥 FIX: Proxy komplett deaktivieren
-  http_proxy: ""
-  https_proxy: ""
-  HTTP_PROXY: ""
-  HTTPS_PROXY: ""
-
 jobs:
   setup:
     name: "Resolve Cromite build image"
@@ -50,7 +44,7 @@ jobs:
       docker_image: ${{ steps.resolve.outputs.docker_image }}
 
     steps:
-      # 🔥 FIX: Proxy auch hier aktiv entfernen
+      # 🔥 FIX: Proxy hier neutralisieren (RICHTIGER Ort)
       - name: Disable proxy
         run: |
           unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY || true
