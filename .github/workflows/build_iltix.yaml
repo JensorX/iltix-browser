@@ -11,6 +11,10 @@ on:
         description: 'uazo/cromite SHA (leave empty = use latest master)'
         required: false
         default: ''
+      docker_image:
+        description: 'Docker image to use (e.g. uazo/cromite-build:147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827)'
+        required: false
+        default: 'uazo/cromite-build:147.0.7727.56-271900671db643de04aa9f909f0dcc3415c8b827'
       arch:
         description: 'Android architecture [arm64/arm/x64]'
         required: true
@@ -65,6 +69,11 @@ jobs:
           CHROMIUM_VERSION=$(cat build/RELEASE)
 
           DOCKER_IMAGE="uazo/cromite-build:${CHROMIUM_VERSION}-${CROMITE_SHA}"
+
+          if [ -n "${{ github.event.inputs.docker_image }}" ]; then
+            echo "[iltix] Using manually specified Docker image: ${{ github.event.inputs.docker_image }}"
+            DOCKER_IMAGE="${{ github.event.inputs.docker_image }}"
+          fi
 
           echo "cromite_sha=${CROMITE_SHA}"         >> $GITHUB_OUTPUT
           echo "chromium_version=${CHROMIUM_VERSION}" >> $GITHUB_OUTPUT
