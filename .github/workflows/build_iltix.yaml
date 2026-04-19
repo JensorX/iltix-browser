@@ -97,6 +97,13 @@ jobs:
           git config --global --unset https.proxy || true
           git config --system --unset http.proxy || true
           git config --system --unset https.proxy || true
+          # Override any proxy environment variables for subsequent steps
+          echo "http_proxy=" >> $GITHUB_ENV
+          echo "https_proxy=" >> $GITHUB_ENV
+          echo "HTTP_PROXY=" >> $GITHUB_ENV
+          echo "HTTPS_PROXY=" >> $GITHUB_ENV
+          echo "ALL_PROXY=" >> $GITHUB_ENV
+          echo "all_proxy=" >> $GITHUB_ENV
 
       - name: Checkout Iltix Browser repo
         uses: actions/checkout@v4
