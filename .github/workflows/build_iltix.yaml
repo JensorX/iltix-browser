@@ -89,8 +89,6 @@ jobs:
         TARGET_OS: android
         http_proxy: ""
         https_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
 
     steps:
       - name: Clean up container proxy settings
