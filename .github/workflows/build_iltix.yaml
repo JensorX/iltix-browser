@@ -87,14 +87,19 @@ jobs:
         HOME: /home/lg/working_dir
         TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
         TARGET_OS: android
+        http_proxy: ""
+        https_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
 
     steps:
-      - name: Ensure no proxy leaks into build
+      - name: Clean up container proxy settings
         run: |
-         unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy || true
-         git config --global --unset http.proxy || true
-         git config --global --unset https.proxy || true  
-         env | grep -i proxy || true
+          git config --global --unset http.proxy || true
+          git config --global --unset https.proxy || true
+          git config --system --unset http.proxy || true
+          git config --system --unset https.proxy || true
+
       - name: Checkout Iltix Browser repo
         uses: actions/checkout@v4
         with:
