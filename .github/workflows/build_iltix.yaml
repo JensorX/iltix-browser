@@ -137,19 +137,65 @@ jobs:
             
             cd $WORKSPACE/chromium/src
             
-            echo "[iltix] Applying patches..."
-            while IFS= read -r patch; do
-              [[ "\$patch" =~ ^# || -z "\$patch" ]] && continue
-              if [[ "\$patch" == Iltix-* ]]; then
-                patch_file="$GITHUB_WORKSPACE/iltix-browser/build/patches/\$patch"
-                if [ -f "\$patch_file" ]; then
-                  echo "-> Applying \$patch"
-                  git am "\$patch_file" || { echo "[ERROR] Failed to apply \$patch"; git am --abort; exit 1; }
-                else
-                  echo "[WARN] Patch not found: \$patch"
+              echo "[iltix] Applying patches..."
+              while IFS= read -r patch; do
+                [[ "\$patch" =~ ^# || -z "\$patch" ]] && continue
+                if [[ "\$patch" == Iltix-* ]]; then
+                  patch_file="$GITHUB_WORKSPACE/iltix-browser/build/patches/\$patch"
+                  if [ -f "\$patch_file" ]; then
+                    echo "-> Applying \$patch"
+                    # Try best-effort application: 3-way git am, then git apply --3way, then git apply --reject
+                    if git am -3 "\$patch_file"; then
+                      echo "[OK] Applied \$patch with git am -3"
+                    else
+                      echo "[WARN] git am -3 failed for \$patch; capturing header and aborting git am"
+                      mkdir -p "$GITHUB_WORKSPACE/patch_failures/$(basename \"\$patch\")"
+                      git am --show-current-patch 2>/dev/null > "$GITHUB_WORKSPACE/patch_failures/$(basename \"\$patch\")/current.patch" || true
+                      git am --abort 2>/dev/null || true
+                      echo "[INFO] Trying git apply --3way --whitespace=fix"
+                      if git apply --3way --whitespace=fix "\$patch_file"; then
+                        echo "[OK] git apply --3way succeeded for \$patch; committing"
+                        git add -A
+                        git commit -m "Apply \$patch (git apply --3way)" || true
+                      else
+                        echo "[WARN] git apply --3way failed for \$patch"
+
+                        # Special-case: allow a deterministic fallback for branding patch only
+                        if [ "$(basename \"\$patch\")" = "Iltix-Branding.patch" ]; then
+                          echo "[INFO] Attempting branding fallback script for \$patch"
+                          if bash "$GITHUB_WORKSPACE/iltix-browser/tools/iltix/apply_branding.sh" "$WORKSPACE"; then
+                            echo "[OK] Branding fallback applied; committing"
+                            git add -A || true
+                            git commit -m "Apply Iltix Branding (fallback script)" || true
+                            continue
+                          else
+                            echo "[WARN] Branding fallback failed"
+                          fi
+                        fi
+
+                        echo "[INFO] Trying git apply --reject --whitespace=fix to gather rejects"
+                        faildir="$GITHUB_WORKSPACE/patch_failures/$(basename \"\$patch\")"
+                        mkdir -p "$faildir"
+                        # Attempt to produce .rej hunks for diagnostics (don't fail the script here)
+                        git apply --reject --whitespace=fix "\$patch_file" || true
+
+                        # collect .rej files (if any) and repository state for debugging
+                        find . -type f -name '*.rej' -exec mv {} "$faildir/" \; || true
+                        git status --porcelain > "$faildir/git_status.txt" || true
+                        git rev-parse --abbrev-ref HEAD > "$faildir/current_branch.txt" || true
+                        git log -n 20 --oneline > "$faildir/git_log.txt" || true
+                        git --no-pager diff > "$faildir/git_diff.txt" || true
+                        cp "\$patch_file" "$faildir/original.patch" || true
+
+                        echo "[ERROR] Patch \$patch could not be applied automatically. Diagnostics saved to $faildir"
+                        exit 1
+                      fi
+                    fi
+                  else
+                    echo "[WARN] Patch not found: \$patch"
+                  fi
                 fi
-              fi
-            done < "$GITHUB_WORKSPACE/iltix-browser/build/cromite_patches_list.txt"
+              done < "$GITHUB_WORKSPACE/iltix-browser/build/cromite_patches_list.txt"
 
             echo "[iltix] Applying icons..."
             CHROMIUM_SRC="$WORKSPACE/chromium/src" \
@@ -174,6 +220,14 @@ jobs:
             echo "[iltix] Starting Build..."
             vpython3 \$WORKSPACE/depot_tools/siso.py ninja -C "out/${{ env.ARCH }}" chrome_public_apk --offline
           EOF
+
+      - name: Upload patch diagnostics (if any)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-failures
+          path: ${{ github.workspace }}/patch_failures
+          retention-days: 7
 
       - name: Collect APK
         run: |
