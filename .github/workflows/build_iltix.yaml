@@ -1,279 +1,281 @@
 name: Build Iltix (Cromite + iltix patches)
 permissions:
-	actions: none
-	checks: none
-	contents: none
-	deployments: none
-	issues: none
-	packages: none
-	pull-requests: none
-	repository-projects: none
-	security-events: none
-	statuses: none
+  actions: none
+  checks: none
+  contents: none
+  deployments: none
+  issues: none
+  packages: none
+  pull-requests: none
+  repository-projects: none
+  security-events: none
+  statuses: none
 
 on:
-	workflow_dispatch:
-		inputs:
-			sha:
-				description: 'uazo/cromite SHA'
-				required: true
-				default: ''
-			target_os:
-				description: 'targetos [android/win/linux/all]'
-				required: true
-				default: 'android'
-			build:
-				description: 'android arch [arm/arm64/x64/all]'
-				required: true
-				default: 'arm64'
-			type:
-				description: 'runner? [dev/ci]'
-				required: true
-				default: 'ci'
-			debug:
-				description: 'debug? [true/false]'
-				required: true
-				default: 'false'
-			clangd:
-				description: 'clangd? [true/false]'
-				required: true
-				default: 'false'
+  push:
+    branches:
+      - 'iltix'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'uazo/cromite SHA'
+        required: true
+        default: ''
+      target_os:
+        description: 'targetos [android/win/linux/all]'
+        required: true
+        default: 'android'
+      build:
+        description: 'android arch [arm/arm64/x64/all]'
+        required: true
+        default: 'arm64'
+      type:
+        description: 'runner? [dev/ci]'
+        required: true
+        default: 'ci'
+      debug:
+        description: 'debug? [true/false]'
+        required: true
+        default: 'false'
+      clangd:
+        description: 'clangd? [true/false]'
+        required: true
+        default: 'false'
 
 env:
-	CROMITE_SHA: ${{ github.event.inputs.sha }}
-	REMOVEDOCKERSUPPORT: true
-	USELOCALIMAGE: true
+  CROMITE_SHA: ${{ github.event.inputs.sha }}
+  REMOVEDOCKERSUPPORT: true
+  USELOCALIMAGE: true
 
 jobs:
-	check_images:
-		runs-on: ${{ github.event.inputs.type }}
-		steps:
-			- name: Checkout cromite
-				uses: actions/checkout@v4
-				with:
-					repository: uazo/cromite
-					path: cromite
-					ref: ${{ github.event.inputs.sha }}
-					fetch-depth: 1
+  check_images:
+    runs-on: ${{ github.event.inputs.type }}
+    steps:
+      - name: Checkout cromite
+        uses: actions/checkout@v4
+        with:
+          repository: uazo/cromite
+          path: cromite
+          ref: ${{ github.event.inputs.sha }}
+          fetch-depth: 1
 
-			- name: Enable proxy on container
-				shell: bash
-				run: |
-					if ! [[ -z "${HTTP_PROXY}" ]]; then
-						PROXY_ADDR=http://$(hostname -I | cut -d' ' -f1 | xargs):8118
-						echo "PROXY_ADDR=$PROXY_ADDR" >> $GITHUB_ENV
-						sudo iptables -D INPUT -p tcp -s localhost --dport 8118 -j ACCEPT || true
-						sudo iptables -D INPUT -p tcp --dport 8118 -j DROP || true
-					fi
+      - name: Enable proxy on container
+        shell: bash
+        run: |
+          if ! [[ -z "${HTTP_PROXY}" ]]; then
+            PROXY_ADDR=http://$(hostname -I | cut -d' ' -f1 | xargs):8118
+            echo "PROXY_ADDR=$PROXY_ADDR" >> $GITHUB_ENV
+            sudo iptables -D INPUT -p tcp -s localhost --dport 8118 -j ACCEPT || true
+            sudo iptables -D INPUT -p tcp --dport 8118 -j DROP || true
+          fi
 
-			- name: Download regctl
-				shell: bash
-				run: |
-					curl -L https://github.com/regclient/regclient/releases/latest/download/regctl-linux-amd64 >regctl
-					chmod 755 regctl
+      - name: Download regctl
+        shell: bash
+        run: |
+          curl -L https://github.com/regclient/regclient/releases/latest/download/regctl-linux-amd64 >regctl
+          chmod 755 regctl
 
-			- name: Get current chromium version
-				shell: bash
-				run: |
-					export VERSION=$( cat ./cromite/build/RELEASE )
+      - name: Get current chromium version
+        shell: bash
+        run: |
+          export VERSION=$( cat ./cromite/build/RELEASE )
 
-					echo Current version is $VERSION
-					echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo Current version is $VERSION
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-					cd cromite/tools
+          cd cromite/tools
 
-			- name: Building build-deps container ${{ env.VERSION }}
-				shell: bash
-				run: |
-					docker pull uazo/build-deps:$VERSION || true
-					IS_PRESENT=$(docker inspect --type=image uazo/build-deps:$VERSION > /dev/null ; echo $?)
-					if [ $IS_PRESENT -ne "0" ]; then
-						IS_PRESENT=$(./regctl image inspect uazo/build-deps:$VERSION > /dev/null ; echo $?)
-						if [ $IS_PRESENT -ne "0" ]; then
-							DOCKER_BUILDKIT=1 docker build -t uazo/build-deps:$VERSION \
-								--progress plain \
-								--build-arg VERSION=$VERSION \
-								--build-arg HTTP_PROXY="$PROXY_ADDR" \
-								--no-cache \
-								cromite/tools/images/build-deps/.
-						fi
-					fi
+      - name: Building build-deps container ${{ env.VERSION }}
+        shell: bash
+        run: |
+          docker pull uazo/build-deps:$VERSION || true
+          IS_PRESENT=$(docker inspect --type=image uazo/build-deps:$VERSION > /dev/null ; echo $?)
+          if [ $IS_PRESENT -ne "0" ]; then
+            IS_PRESENT=$(./regctl image inspect uazo/build-deps:$VERSION > /dev/null ; echo $?)
+            if [ $IS_PRESENT -ne "0" ]; then
+              DOCKER_BUILDKIT=1 docker build -t uazo/build-deps:$VERSION \
+                --progress plain \
+                --build-arg VERSION=$VERSION \
+                --build-arg HTTP_PROXY="$PROXY_ADDR" \
+                --no-cache \
+                cromite/tools/images/build-deps/.
+            fi
+          fi
 
-			- name: Building chromium container ${{ env.VERSION }}
-				shell: bash
-				run: |
-					docker pull uazo/chromium:$VERSION || true
-					IS_PRESENT=$(docker inspect --type=image uazo/chromium:$VERSION > /dev/null ; echo $?)
-					if [ $IS_PRESENT -ne "0" ]; then
-						IS_PRESENT=$(./regctl image inspect uazo/chromium:$VERSION > /dev/null ; echo $?)
-						if [ $IS_PRESENT -ne "0" ]; then
-							DOCKER_BUILDKIT=1 docker build -t uazo/chromium:$VERSION \
-								--progress plain \
-								--build-arg VERSION=$VERSION \
-								--build-arg HTTP_PROXY="$PROXY_ADDR" \
-								cromite/tools/images/chr-source/.
-						fi
-					fi
+      - name: Building chromium container ${{ env.VERSION }}
+        shell: bash
+        run: |
+          docker pull uazo/chromium:$VERSION || true
+          IS_PRESENT=$(docker inspect --type=image uazo/chromium:$VERSION > /dev/null ; echo $?)
+          if [ $IS_PRESENT -ne "0" ]; then
+            IS_PRESENT=$(./regctl image inspect uazo/chromium:$VERSION > /dev/null ; echo $?)
+            if [ $IS_PRESENT -ne "0" ]; then
+              DOCKER_BUILDKIT=1 docker build -t uazo/chromium:$VERSION \
+                --progress plain \
+                --build-arg VERSION=$VERSION \
+                --build-arg HTTP_PROXY="$PROXY_ADDR" \
+                cromite/tools/images/chr-source/.
+            fi
+          fi
 
-			- name: Building cromite container ${{ env.VERSION }}-${{ env.CROMITE_SHA }}
-				shell: bash
-				run: |
-					docker pull uazo/cromite:$VERSION-$CROMITE_SHA || true
-					IS_PRESENT=$(docker inspect --type=image uazo/cromite:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
-					if [ $IS_PRESENT -ne "0" ]; then
-						IS_PRESENT=$(./regctl image inspect uazo/cromite:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
-						if [ $IS_PRESENT -ne "0" ]; then
-							DOCKER_BUILDKIT=1 docker build -t uazo/cromite:$VERSION-$CROMITE_SHA --progress plain \
-								--build-arg CROMITE_SHA=$CROMITE_SHA \
-								--build-arg VERSION=$VERSION \
-								--build-arg HTTP_PROXY="$PROXY_ADDR" \
-								cromite/tools/images/cromite-source/.
-						fi
-					fi
+      - name: Building cromite container ${{ env.VERSION }}-${{ env.CROMITE_SHA }}
+        shell: bash
+        run: |
+          docker pull uazo/cromite:$VERSION-$CROMITE_SHA || true
+          IS_PRESENT=$(docker inspect --type=image uazo/cromite:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
+          if [ $IS_PRESENT -ne "0" ]; then
+            IS_PRESENT=$(./regctl image inspect uazo/cromite:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
+            if [ $IS_PRESENT -ne "0" ]; then
+              DOCKER_BUILDKIT=1 docker build -t uazo/cromite:$VERSION-$CROMITE_SHA --progress plain \
+                --build-arg CROMITE_SHA=$CROMITE_SHA \
+                --build-arg VERSION=$VERSION \
+                --build-arg HTTP_PROXY="$PROXY_ADDR" \
+                cromite/tools/images/cromite-source/.
+            fi
+          fi
 
-			- name: Building cromite-build container ${{ env.VERSION }}-${{ env.CROMITE_SHA }}
-				shell: bash
-				run: |
-					docker pull uazo/cromite-build:$VERSION-$CROMITE_SHA || true
-					IS_PRESENT=$(docker inspect --type=image uazo/cromite-build:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
-					if [ $IS_PRESENT -ne "0" ]; then
-						IS_PRESENT=$(./regctl image inspect uazo/cromite-build:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
-						if [ $IS_PRESENT -ne "0" ]; then
-							DOCKER_BUILDKIT=1 docker build -t uazo/cromite-build:$VERSION-$CROMITE_SHA --progress plain \
-								--build-arg CROMITE_SHA=$CROMITE_SHA \
-								--build-arg VERSION=$VERSION \
-								--build-arg HTTP_PROXY="$PROXY_ADDR" \
-								--no-cache \
-								cromite/tools/images/cromite-build/.
-						fi
-					fi
+      - name: Building cromite-build container ${{ env.VERSION }}-${{ env.CROMITE_SHA }}
+        shell: bash
+        run: |
+          docker pull uazo/cromite-build:$VERSION-$CROMITE_SHA || true
+          IS_PRESENT=$(docker inspect --type=image uazo/cromite-build:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
+          if [ $IS_PRESENT -ne "0" ]; then
+            IS_PRESENT=$(./regctl image inspect uazo/cromite-build:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
+            if [ $IS_PRESENT -ne "0" ]; then
+              DOCKER_BUILDKIT=1 docker build -t uazo/cromite-build:$VERSION-$CROMITE_SHA --progress plain \
+                --build-arg CROMITE_SHA=$CROMITE_SHA \
+                --build-arg VERSION=$VERSION \
+                --build-arg HTTP_PROXY="$PROXY_ADDR" \
+                --no-cache \
+                cromite/tools/images/cromite-build/.
+            fi
+          fi
 
-			- name: Get uazo/cromite-build from docker hub if present
-				shell: bash
-				run: |
-					IS_PRESENT=$(./regctl image inspect uazo/cromite-build:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
-					if [ $IS_PRESENT -eq "0" ]; then
-						docker pull uazo/cromite-build:$VERSION-$CROMITE_SHA
-					fi
+      - name: Get uazo/cromite-build from docker hub if present
+        shell: bash
+        run: |
+          IS_PRESENT=$(./regctl image inspect uazo/cromite-build:$VERSION-$CROMITE_SHA > /dev/null ; echo $?)
+          if [ $IS_PRESENT -eq "0" ]; then
+            docker pull uazo/cromite-build:$VERSION-$CROMITE_SHA
+          fi
 
-			- name: Mark image to build
-				shell: bash
-				run: |
-					IS_PRESENT=$(docker inspect --type=image uazo/cromite-build:build > /dev/null ; echo $?)
-					if [ $IS_PRESENT -eq "0" ]; then
-						docker rmi uazo/cromite-build:build || true
-					fi
-					docker tag uazo/cromite-build:$VERSION-$CROMITE_SHA uazo/cromite-build:build || true
+      - name: Mark image to build
+        shell: bash
+        run: |
+          IS_PRESENT=$(docker inspect --type=image uazo/cromite-build:build > /dev/null ; echo $?)
+          if [ $IS_PRESENT -eq "0" ]; then
+            docker rmi uazo/cromite-build:build || true
+          fi
+          docker tag uazo/cromite-build:$VERSION-$CROMITE_SHA uazo/cromite-build:build || true
 
-	build:
-		runs-on: ${{ github.event.inputs.type }}
-		needs: check_images
-		if: success()
-		timeout-minutes: 1440
+  build:
+    runs-on: ${{ github.event.inputs.type }}
+    needs: check_images
+    if: success()
+    timeout-minutes: 1440
 
-		container:
-			image: uazo/cromite-build:build
-			env:
-				REMOVEDOCKERSUPPORT: true
-				USELOCALIMAGE: true
-				USEINTERNALNETWORK: true
-				WORKSPACE: /home/lg/working_dir
-				HOME: /home/lg/working_dir
-				TARGET_ISDEBUG: ${{ github.event.inputs.debug }}
-				TARGET_OS: android
-				USE_KEYSTORE: true
-				KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-				CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
-			volumes:
-				- /storage/images/${{ github.event.inputs.sha }}/android/${{ github.event.inputs.debug }}/arm64:/home/lg/working_dir/chromium/src/out/arm64
-				- /tmp/proxy:/tmp/proxy
-				- /win_sdk:/win_sdk
+    container:
+      image: uazo/cromite-build:build
+      env:
+        REMOVEDOCKERSUPPORT: true
+        USELOCALIMAGE: true
+        USEINTERNALNETWORK: true
+        WORKSPACE: /home/lg/working_dir
+        HOME: /home/lg/working_dir
+        TARGET_ISDEBUG: ${{ github.event.inputs.debug }}
+        TARGET_OS: android
+        USE_KEYSTORE: true
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
+      volumes:
+        - /storage/images/${{ github.event.inputs.sha }}/android/${{ github.event.inputs.debug }}/arm64:/home/lg/working_dir/chromium/src/out/arm64
+        - /tmp/proxy:/tmp/proxy
+        - /win_sdk:/win_sdk
 
-		steps:
-			- name: Prepare Build Container
-				shell: bash
-				run: |
-					PATH=$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH
-					cd $WORKSPACE
+    steps:
+      - name: Prepare Build Container
+        shell: bash
+        run: |
+          PATH=$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH
+          cd $WORKSPACE
 
-					# reset proxy env
-					HTTP_PROXY=
-					HTTPS_PROXY=
-					http_proxy=
-					https_proxy=
+          # reset proxy env
+          HTTP_PROXY=
+          HTTPS_PROXY=
+          http_proxy=
+          https_proxy=
 
-					sudo chown lg /home/lg/working_dir || true
+          sudo chown lg /home/lg/working_dir || true
 
-					# prepare keystore (decrypt from secret)
-					echo "${{ secrets.KEYSTORE }}" > cromite.keystore.asc || true
-					if [ -s cromite.keystore.asc ]; then
-						gpg --homedir ./ -d --passphrase "${{ secrets.KEYSTORE_PASSPHRASE }}" --batch cromite.keystore.asc > cromite.keystore || true
-					fi
+          # prepare keystore (decrypt from secret)
+          echo "${{ secrets.KEYSTORE }}" > cromite.keystore.asc || true
+          if [ -s cromite.keystore.asc ]; then
+            gpg --homedir ./ -d --passphrase "${{ secrets.KEYSTORE_PASSPHRASE }}" --batch cromite.keystore.asc > cromite.keystore || true
+          fi
 
-			- name: Checkout iltix repository (workflow repo)
-				uses: actions/checkout@v4
-				with:
-					fetch-depth: 1
+      - name: Checkout iltix repository (workflow repo)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-			- name: Apply iltix patches into chromium/src
-				shell: bash
-				run: |
-					set -euo pipefail
-					echo "Looking for patches in $GITHUB_WORKSPACE/iltix/patches"
-					if [ ! -d "$GITHUB_WORKSPACE/iltix/patches" ]; then
-						echo "No iltix patches directory found; skipping." && exit 0
-					fi
+      - name: Apply iltix patches into chromium/src
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Looking for patches in $GITHUB_WORKSPACE/iltix/patches"
+          if [ ! -d "$GITHUB_WORKSPACE/iltix/patches" ]; then
+            echo "No iltix patches directory found; skipping." && exit 0
+          fi
 
-					cd $WORKSPACE/chromium/src
-					# ensure repo state
-					if [ ! -d .git ]; then
-						echo "chromium/src is not a git repository; cannot apply patches" && exit 1
-					fi
+          cd $WORKSPACE/chromium/src
+          # ensure repo state
+          if [ ! -d .git ]; then
+            echo "chromium/src is not a git repository; cannot apply patches" && exit 1
+          fi
 
-					for p in "$GITHUB_WORKSPACE"/iltix/patches/*.patch; do
-						[ -e "$p" ] || continue
-						echo "Applying patch: $p"
-						# try git am (email-style patches), fallback to git apply
-						if git am --3way < "$p"; then
-							echo "Applied $p with git am"
-						else
-							git apply --index "$p" && git commit -m "Apply iltix patch: $(basename "$p")" || echo "git apply failed for $p"
-						fi
-					done
+          for p in "$GITHUB_WORKSPACE"/iltix/patches/*.patch; do
+            [ -e "$p" ] || continue
+            echo "Applying patch: $p"
+            # try git am (email-style patches), fallback to git apply
+            if git am --3way < "$p"; then
+              echo "Applied $p with git am"
+            else
+              git apply --index "$p" && git commit -m "Apply iltix patch: $(basename "$p")" || echo "git apply failed for $p"
+            fi
+          done
 
-			- name: Build Cromite Android arm64 (with iltix patches)
-				if: ${{ (github.event.inputs.target_os == 'android' || github.event.inputs.target_os == 'all') && (github.event.inputs.build == 'arm64' || github.event.inputs.build == 'all') }}
-				shell: bash
-				run: |
-					PATH=$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH
-					cd $WORKSPACE/chromium/src
+      - name: Build Cromite Android arm64 (with iltix patches)
+        if: ${{ (github.event.inputs.target_os == 'android' || github.event.inputs.target_os == 'all') && (github.event.inputs.build == 'arm64' || github.event.inputs.build == 'all') }}
+        shell: bash
+        run: |
+          PATH=$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH
+          cd $WORKSPACE/chromium/src
 
-					echo "::group::-------- gn gen"
-					gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
-					echo "::endgroup::"
+          echo "::group::-------- gn gen"
+          gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
+          echo "::endgroup::"
 
-					echo "::group::-------- gn args"
-					gn args out/arm64/ --list --short || true
-					gn args out/arm64/ --list >out/arm64/gn_list || true
-					echo "::endgroup::"
+          echo "::group::-------- gn args"
+          gn args out/arm64/ --list --short || true
+          gn args out/arm64/ --list >out/arm64/gn_list || true
+          echo "::endgroup::"
 
-					vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
-					vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
+          vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
+          vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
 
-					cp ../../cromite/build/RELEASE out/arm64 || true
+          cp ../../cromite/build/RELEASE out/arm64 || true
 
-			- name: Get ninja logs Android arm64
-				if: ${{ (github.event.inputs.target_os == 'android' || github.event.inputs.target_os == 'all') && (github.event.inputs.build == 'arm64' || github.event.inputs.build == 'all') }}
-				shell: bash
-				run: |
-					cd $WORKSPACE
-					$WORKSPACE/ninjatracing/ninjatracing -a $WORKSPACE/chromium/src/out/arm64/.ninja_log >$WORKSPACE/chromium/src/out/arm64/ninja_log_trace.json || true
-					python3 $WORKSPACE/chromium/src/third_party/catapult/tracing/bin/trace2html $WORKSPACE/chromium/src/out/arm64/ninja_log_trace.json || true
+      - name: Get ninja logs Android arm64
+        if: ${{ (github.event.inputs.target_os == 'android' || github.event.inputs.target_os == 'all') && (github.event.inputs.build == 'arm64' || github.event.inputs.build == 'all') }}
+        shell: bash
+        run: |
+          cd $WORKSPACE
+          $WORKSPACE/ninjatracing/ninjatracing -a $WORKSPACE/chromium/src/out/arm64/.ninja_log >$WORKSPACE/chromium/src/out/arm64/ninja_log_trace.json || true
+          python3 $WORKSPACE/chromium/src/third_party/catapult/tracing/bin/trace2html $WORKSPACE/chromium/src/out/arm64/ninja_log_trace.json || true
 
-			- name: Upload release APK
-				if: ${{ always() }}
-				uses: actions/upload-artifact@v4
-				with:
-					name: iltix-chrome-arm64-apk
-					path: $WORKSPACE/chromium/src/out/arm64/apks/ChromePublic.apk
-
+      - name: Upload release APK
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: iltix-chrome-arm64-apk
+          path: $WORKSPACE/chromium/src/out/arm64/apks/ChromePublic.apk
