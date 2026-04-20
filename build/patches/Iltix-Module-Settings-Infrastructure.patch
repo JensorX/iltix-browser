@@ -37,7 +37,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/IltixModu
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/IltixModuleManager.java
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,92 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -134,7 +134,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModulePreference.java
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,48 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -187,7 +187,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/settings/IltixModuleSettingsFragment.java
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,47 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -239,7 +239,7 @@ diff --git a/chrome/android/java/res/xml/iltix_module_preferences.xml b/chrome/a
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/res/xml/iltix_module_preferences.xml
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,45 @@
 +<?xml version="1.0" encoding="utf-8"?>
 +<!-- Iltix Module Settings — DO NOT ADD UPSTREAM STRINGS HERE -->
 +<!-- All string references must be defined in Iltix-Module-Settings.grdp -->
@@ -288,7 +288,7 @@ new file mode 100644
 diff --git a/chrome/android/java/res/xml/main_preferences.xml b/chrome/android/java/res/xml/main_preferences.xml
 --- a/chrome/android/java/res/xml/main_preferences.xml
 +++ b/chrome/android/java/res/xml/main_preferences.xml
-@@ -14,6 +14,13 @@ found in the LICENSE file.
+@@ -14,4 +14,12 @@ found in the LICENSE file.
          android:order="0" />
 +    <!-- Iltix Module Settings — added by Iltix-Module-Settings-Infrastructure.patch -->
 +    <Preference
@@ -305,7 +305,7 @@ diff --git a/chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/
 new file mode 100644
 --- /dev/null
 +++ b/chrome/browser/ui/android/strings/iltix_android_chrome_strings_grd/Iltix-Module-Settings.grdp
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,46 @@
 +<?xml version="1.0" encoding="utf-8"?>
 +<!-- Iltix Module Settings strings. Added by Iltix-Module-Settings-Infrastructure.patch -->
 +<!-- DO NOT modify upstream strings files. All Iltix strings live here. -->
@@ -355,7 +355,7 @@ new file mode 100644
 diff --git a/chrome/browser/ui/android/strings/android_chrome_strings.grd b/chrome/browser/ui/android/strings/android_chrome_strings.grd
 --- a/chrome/browser/ui/android/strings/android_chrome_strings.grd
 +++ b/chrome/browser/ui/android/strings/android_chrome_strings.grd
-@@ -1,5 +1,8 @@
+@@ -1,4 +1,7 @@
  <?xml version="1.0" encoding="utf-8"?>
  <grit current_release="1" latest_public_release="0" output_files_only="false">
 +  <!-- Iltix strings (must come before the cromite_android_chrome_strings_grd include) -->

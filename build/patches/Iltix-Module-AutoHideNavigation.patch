@@ -26,7 +26,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/autohide/
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/autohide/IltixAutoHideController.java
-@@ -0,0 +1,155 @@
+@@ -0,12 +1,170 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +

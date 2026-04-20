@@ -33,7 +33,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigatio
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarCoordinator.java
-@@ -0,0 +1,180 @@
+@@ -0,4 +1,170 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -208,7 +208,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigatio
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/navigation/IltixNavBarView.java
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,61 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -274,7 +274,7 @@ diff --git a/chrome/android/java/res/layout/iltix_nav_bar.xml b/chrome/android/j
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/res/layout/iltix_nav_bar.xml
-@@ -0,0 +1,120 @@
+@@ -0,1 +1,113 @@
 +<?xml version="1.0" encoding="utf-8"?>
 +<!--
 +  Iltix Navigation Bar layout.

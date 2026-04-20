@@ -32,7 +32,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/Ilt
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixLiquidGlassDrawable.java
-@@ -0,0 +1,195 @@
+@@ -0,2 +1,196 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -233,7 +233,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/Ilt
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/src/org/chromium/chrome/browser/iltix/theme/IltixThemeModule.java
-@@ -0,0 +1,110 @@
+@@ -0,11 +1,127 @@
 +// Copyright 2026 The Iltix Authors. All rights reserved.
 +// Use of this source code is governed by a GPL-2.0-or-later license.
 +
@@ -365,7 +365,7 @@ diff --git a/chrome/android/java/res/drawable/iltix_nav_background.xml b/chrome/
 new file mode 100644
 --- /dev/null
 +++ b/chrome/android/java/res/drawable/iltix_nav_background.xml
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,11 @@
 +<?xml version="1.0" encoding="utf-8"?>
 +<!-- Fallback static background for the Iltix nav bar (used when IltixLiquidGlassDrawable
 +     cannot be set programmatically or as a simple XML baseline). -->

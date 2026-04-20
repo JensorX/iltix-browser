@@ -56,7 +56,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/init/ChromeBrow
  import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
  import org.chromium.chrome.browser.profiles.ProfileManager;
  import org.chromium.chrome.browser.signin.SigninCheckerProvider;
-@@ -110,6 +112,8 @@ public class ChromeBrowserInitializer {
+@@ -110,5 +112,7 @@ public class ChromeBrowserInitializer {
      public void handlePreNativeStartupAndLoadLibraries(final BrowserParts parts) {
          ThreadUtils.checkUiThread();
          if (parts.isActivityFinishingOrDestroyed()) return;
@@ -76,7 +76,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedAct
  import org.chromium.chrome.browser.lifetime.ApplicationLifetime;
  
  /**
-@@ -555,6 +557,10 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
+@@ -555,3 +557,7 @@ public class ChromeTabbedActivity extends ChromeActivity implements PreAttachInt
      @Override
      protected void onCreate(@Nullable Bundle savedInstanceState) {
 +        // Iltix Theme: transparent system bars + edge-to-edge before first layout.
@@ -87,7 +87,7 @@ diff --git a/chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedAct
 diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java
 --- a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java
 +++ b/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/browser/toolbar/bottom/BottomControlsCoordinator.java
-@@ -35,6 +35,11 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+@@ -35,6 +35,10 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
  import org.chromium.ui.resources.ResourceManager;
  import org.chromium.ui.resources.dynamics.ViewResourceAdapter;
  import org.chromium.ui.widget.Toast;
@@ -98,7 +98,7 @@ diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/brow
  import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
  import org.chromium.chrome.browser.tab.Tab;
  
-@@ -92,6 +97,8 @@ public class BottomControlsCoordinator implements BackPressHandler {
+@@ -92,6 +97,7 @@ public class BottomControlsCoordinator implements BackPressHandler {
       * @param readAloudRestoringSupplier Supplier that returns true if Read Aloud is currently
       *     restoring its player, e.g. after theme change.
       * @param topUiThemeColorProvider {@link ThemeColorProvider} for top UI.
@@ -106,7 +106,7 @@ diff --git a/chrome/browser/ui/android/toolbar/java/src/org/chromium/chrome/brow
       * @param tabSupplier Activity tab supplier.
       */
      @SuppressLint("CutPasteId") // Not actually cut and paste since it's View vs ViewGroup.
-@@ -171,6 +178,13 @@ public class BottomControlsCoordinator implements BackPressHandler {
+@@ -171,8 +178,14 @@ public class BottomControlsCoordinator implements BackPressHandler {
                              mMediator.setBottomControlsVisible(isVisible);
                          }
                      },
