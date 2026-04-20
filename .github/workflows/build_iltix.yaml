@@ -43,20 +43,20 @@ on:
         default: 'false'
 
 env:
-  CROMITE_SHA: ${{ github.event.inputs.sha }}
+  CROMITE_SHA: ${{ github.event.inputs.sha || github.sha }}
   REMOVEDOCKERSUPPORT: true
   USELOCALIMAGE: true
 
 jobs:
   check_images:
-    runs-on: ${{ github.event.inputs.type }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.type || 'ubuntu-latest' }}
     steps:
       - name: Checkout cromite
         uses: actions/checkout@v4
         with:
           repository: uazo/cromite
           path: cromite
-          ref: ${{ github.event.inputs.sha }}
+          ref: ${{ github.event.inputs.sha || github.sha }}
           fetch-depth: 1
 
       - name: Enable proxy on container
@@ -169,7 +169,7 @@ jobs:
           docker tag uazo/cromite-build:$VERSION-$CROMITE_SHA uazo/cromite-build:build || true
 
   build:
-    runs-on: ${{ github.event.inputs.type }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.type || 'ubuntu-latest' }}
     needs: check_images
     if: success()
     timeout-minutes: 1440
@@ -182,13 +182,13 @@ jobs:
         USEINTERNALNETWORK: true
         WORKSPACE: /home/lg/working_dir
         HOME: /home/lg/working_dir
-        TARGET_ISDEBUG: ${{ github.event.inputs.debug }}
+        TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
         TARGET_OS: android
         USE_KEYSTORE: true
         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
       volumes:
-        - /storage/images/${{ github.event.inputs.sha }}/android/${{ github.event.inputs.debug }}/arm64:/home/lg/working_dir/chromium/src/out/arm64
+        - /storage/images/${{ github.event.inputs.sha || github.sha }}/android/${{ github.event.inputs.debug || 'false' }}/arm64:/home/lg/working_dir/chromium/src/out/arm64
         - /tmp/proxy:/tmp/proxy
         - /win_sdk:/win_sdk
 
