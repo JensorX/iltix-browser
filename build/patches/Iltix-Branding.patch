@@ -22,14 +22,14 @@ diff --git a/chrome/android/java/AndroidManifest.xml b/chrome/android/java/Andro
 --- a/chrome/android/java/AndroidManifest.xml
 +++ b/chrome/android/java/AndroidManifest.xml
 @@ -206,7 +206,7 @@ by a child template that "extends" this file.
-      <application android:name="{% block application_name %}org.chromium.chrome.browser.base.SplitChromeApplication{% endblock %}"
-        android:icon="@drawable/ic_launcher"
-        android:roundIcon="@drawable/ic_launcher_round"
+       <application android:name="{% block application_name %}org.chromium.chrome.browser.base.SplitChromeApplication{% endblock %}"
+         android:icon="@drawable/ic_launcher"
+         android:roundIcon="@drawable/ic_launcher_round"
 -        android:label="Cromite"
 +        android:label="Iltix Browser"
-        android:memtagMode="async"
-        android:largeHeap="false"
-        android:manageSpaceActivity="@string/manage_space_activity"
+         android:memtagMode="async"
+         android:largeHeap="false"
+         android:manageSpaceActivity="@string/manage_space_activity"
 diff --git a/chrome/app/theme/chromium/BRANDING b/chrome/app/theme/chromium/BRANDING
 --- a/chrome/app/theme/chromium/BRANDING
 +++ b/chrome/app/theme/chromium/BRANDING
@@ -44,6 +44,6 @@ diff --git a/chrome/app/theme/chromium/BRANDING b/chrome/app/theme/chromium/BRAN
 +PRODUCT_SHORTNAME=Iltix
 +PRODUCT_INSTALLER_FULLNAME=Iltix Browser Installer
 +PRODUCT_INSTALLER_SHORTNAME=Iltix Installer
- MAC_BUNDLE_ID=de.iltix.browser
- MAC_BUNDLE_APP_NAME=Iltix Browser
+ MAC_BUNDLE_ID=org.chromium.Chromium
+ MAC_BUNDLE_APP_NAME=Chromium
 --
