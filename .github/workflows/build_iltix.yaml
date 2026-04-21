@@ -175,6 +175,8 @@ jobs:
 
   prepare_out:
     runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.fetch_out.outputs.found }}
     steps:
       - name: Prepare workspace
         uses: actions/checkout@v4
@@ -188,6 +190,17 @@ jobs:
           set -euo pipefail
           TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cromite_release || 'latest' }}"
           echo "Using cromite release tag: $TAG"
+          # If user passed 'latest', try to resolve the real tag name via GitHub API
+          if [ "$TAG" = "latest" ]; then
+            echo "Resolving latest release tag via GitHub API"
+            API_TAG=$(curl -s https://api.github.com/repos/uazo/cromite/releases/latest | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' || true)
+            if [ -n "$API_TAG" ]; then
+              TAG="$API_TAG"
+              echo "Resolved cromite release tag: $TAG"
+            else
+              echo "Could not resolve latest release tag via API; proceeding with TAG=latest"
+            fi
+          fi
           mkdir -p tmp_out
           ASSETS=("out-arm64.tar.gz" "out_arm64.tar.gz" "out/arm64.tar.gz" "out_arm64.tar" "out-arm64.tar")
           FOUND=0
@@ -209,32 +222,38 @@ jobs:
             max_attempts=3
             pulled=0
             # try docker pull with retries
-            until [ $attempts -ge $max_attempts ]; do
-              if docker pull "$IMAGE_TAG"; then
-                pulled=1
-                break
-              fi
-              attempts=$((attempts+1))
-              echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
-              sleep $((attempts*5))
-            done
-            if [ $pulled -eq 1 ]; then
-              CID=$(docker create "$IMAGE_TAG" true 2>/dev/null || true)
-              if [ -n "$CID" ]; then
-                if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
-                  echo "Copied out/arm64 from container"
-                  FOUND=1
-                else
-                  echo "docker cp failed to copy out/arm64 from $CID"
+            if command -v docker >/dev/null 2>&1; then
+              until [ $attempts -ge $max_attempts ]; do
+                if docker pull "$IMAGE_TAG"; then
+                  pulled=1
+                  break
                 fi
-                docker rm "$CID" || true
+                attempts=$((attempts+1))
+                echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
+                sleep $((attempts*5))
+              done
+              if [ $pulled -eq 1 ]; then
+                CID=$(docker create "$IMAGE_TAG" true 2>/dev/null || true)
+                if [ -n "$CID" ]; then
+                  if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
+                    echo "Copied out/arm64 from container $CID"
+                    FOUND=1
+                  else
+                    echo "docker cp failed to copy out/arm64 from $CID"
+                  fi
+                  docker rm "$CID" || true
+                else
+                  echo "docker create failed, ContainerId empty"
+                fi
               else
-                echo "docker create failed, ContainerId empty"
+                echo "docker pull failed after $max_attempts attempts"
               fi
             else
-              echo "docker pull failed after $max_attempts attempts"
+              echo "docker CLI not available on runner; skipping docker image extraction"
             fi
           fi
+
+
           if [ $FOUND -eq 1 ]; then
             tar -czf out-arm64.tar.gz -C tmp_out arm64 || tar -czf out-arm64.tar.gz tmp_out/arm64 || true
             ls -la out-arm64.tar.gz
@@ -257,8 +276,8 @@ jobs:
     if: success()
     timeout-minutes: 1440
     env:
-      WORKSPACE: /home/lg/working_dir
-      HOME: /home/lg/working_dir
+      WORKSPACE: ${{ github.workspace }}
+      HOME: ${{ github.workspace }}
       TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
       TARGET_OS: android
       USE_KEYSTORE: true
@@ -307,46 +326,46 @@ jobs:
             echo "No iltix patches directory found; skipping." && exit 0
           fi
 
-          cd $WORKSPACE/chromium/src
+          cd "$WORKSPACE/chromium/src"
           # ensure repo state
-          if [ $FOUND -eq 0 ]; then
-            echo "No release asset found, trying docker image extraction"
-            IMAGE_TAG="uazo/cromite-build:$TAG"
-            FOUND=0
-            # only attempt docker operations if docker CLI is available
-            if command -v docker >/dev/null 2>&1; then
-              attempts=0
-              max_attempts=3
-              pulled=0
-              until [ $attempts -ge $max_attempts ]; do
-                if docker pull "$IMAGE_TAG"; then
-                  pulled=1
-                  break
-                fi
-                attempts=$((attempts+1))
-                echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
-                sleep $((attempts*5))
-              done
-              if [ $pulled -eq 1 ]; then
-                CID=$(docker create "$IMAGE_TAG" true 2>/dev/null || true)
-                if [ -n "$CID" ]; then
-                  if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
-                    echo "Copied out/arm64 from container"
-                    FOUND=1
-                  else
-                    echo "docker cp failed to copy out/arm64 from $CID"
-                  fi
-                  docker rm "$CID" || true
-                else
-                  echo "docker create failed, ContainerId empty"
-                fi
-              else
-                echo "docker pull failed after $max_attempts attempts"
-              fi
+          if [ ! -d .git ]; then
+            echo "chromium/src is not a git repository; cannot apply patches" && exit 1
+          fi
+
+          for p in "$GITHUB_WORKSPACE"/iltix/patches/*.patch; do
+            [ -e "$p" ] || continue
+            echo "Applying patch: $p"
+            if git am --3way < "$p"; then
+              echo "Applied $p with git am"
             else
-              echo "docker CLI not available on runner; skipping docker image extraction"
+              if git apply --index "$p"; then
+                git commit -m "Apply iltix patch: $(basename "$p")"
+              else
+                echo "git apply failed for $p"
+              fi
+            fi
+          done
+
+      - name: Run build (use cromite image if available)
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST_WS="${{ github.workspace }}"
+          CONTAINER_WS="/home/lg/working_dir"
+          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cromite_release || 'latest' }}"
+          if [ "$TAG" = "latest" ]; then
+            API_TAG=$(curl -s https://api.github.com/repos/uazo/cromite/releases/latest | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' || true)
+            if [ -n "$API_TAG" ]; then
+              TAG="$API_TAG"
             fi
           fi
+          IMAGE="uazo/cromite-build:$TAG"
+
+          # Try docker if available
+          pulled=0
+          if command -v docker >/dev/null 2>&1; then
+            attempts=0
+            max_attempts=3
             until [ $attempts -ge $max_attempts ]; do
               if docker pull "$IMAGE"; then
                 pulled=1
@@ -356,38 +375,32 @@ jobs:
               echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
               sleep $((attempts*5))
             done
+          else
+            echo "docker CLI not available on runner; will build on host"
           fi
 
           if [ "$pulled" = "1" ]; then
-            echo "Image pulled: $IMAGE -- running build inside container"
-            docker run --rm \
-              -v "$HOST_WS":"$CONTAINER_WS" \
-              -e WORKSPACE="$CONTAINER_WS" \
-              -w "$CONTAINER_WS" \
-              "$IMAGE" bash -lc '
-                set -euo pipefail
-                cd chromium/src
-                if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
-                  echo "Found prebuilt out/arm64 — running incremental APK build"
-                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline || true
-                else
-                  echo "No prebuilt out/arm64 found — running full GN/Ninja build"
-                  gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
-                  gn args out/arm64/ --list --short || true
-                  gn args out/arm64/ --list >out/arm64/gn_list || true
-                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
-                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
-                  cp ../../cromite/build/RELEASE out/arm64 || true
-                fi'
+            echo "Running build inside container $IMAGE"
+            docker run --rm -v "$HOST_WS":"$CONTAINER_WS" -e WORKSPACE="$CONTAINER_WS" -w "$CONTAINER_WS" "$IMAGE" bash -lc '
+              set -euo pipefail
+              cd chromium/src
+              if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
+                echo "Found prebuilt out/arm64 — running incremental APK build"
+                vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline || true
+              else
+                echo "No prebuilt out/arm64 found — running full GN/Ninja build"
+                gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
+                vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
+                vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
+                cp ../../cromite/build/RELEASE out/arm64 || true
+              fi'
           else
-            echo "Docker image not available or pull failed after retries — building on host"
+            echo "Building on host"
             cd "$HOST_WS/chromium/src"
             if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
               vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline || true
             else
               gn gen --args="target_os = \"android\" $(cat $HOST_WS/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
-              gn args out/arm64/ --list --short || true
-              gn args out/arm64/ --list >out/arm64/gn_list || true
               vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_bundle --offline
               vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline
               cp ../../cromite/build/RELEASE out/arm64 || true
