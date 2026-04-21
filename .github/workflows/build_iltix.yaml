@@ -17,17 +17,17 @@ on:
       - 'iltix'
   workflow_dispatch:
     inputs:
-      sha:
-        description: 'uazo/cromite SHA'
-        required: true
-        default: ''
-      target_os:
-        description: 'targetos [android/win/linux/all]'
-        required: true
-        default: 'android'
-      build:
-        description: 'android arch [arm/arm64/x64/all]'
-        required: true
+      env:
+        REMOVEDOCKERSUPPORT: true
+        USELOCALIMAGE: true
+        USEINTERNALNETWORK: true
+        WORKSPACE: ${{ github.workspace }}
+        HOME: ${{ github.workspace }}
+        TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
+        TARGET_OS: android
+        USE_KEYSTORE: true
+        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
         default: 'arm64'
       type:
         description: 'runner? [dev/ci]'
@@ -310,31 +310,51 @@ jobs:
             fi
           done
 
-      - name: Build Cromite Android arm64 (with iltix patches)
+      - name: Run build (use cromite image if available)
         if: ${{ (github.event.inputs.target_os == 'android' || github.event.inputs.target_os == 'all') && (github.event.inputs.build == 'arm64' || github.event.inputs.build == 'all') }}
         shell: bash
+        env:
+          IMAGE: "uazo/cromite-build:${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cromite_release || 'latest' }}"
+          CONTAINER_WS: /home/lg/working_dir
+          HOST_WS: ${{ github.workspace }}
         run: |
-          PATH=$WORKSPACE/chromium/src/third_party/llvm-build/Release+Asserts/bin:$WORKSPACE/depot_tools/:/usr/local/go/bin:$WORKSPACE/mtool/bin:$PATH
-          cd $WORKSPACE/chromium/src
-
-          # If a prebuilt out/arm64 was provided, do an incremental APK build only
-          if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
-            echo "Found prebuilt out/arm64 — running incremental APK build"
-            vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline || true
+          set -euo pipefail
+          echo "Using image: $IMAGE"
+          # Try to pull image; if available run the build inside it, else build on host
+          if docker pull "$IMAGE"; then
+            echo "Image pulled: $IMAGE -- running build inside container"
+            docker run --rm \
+              -v "$HOST_WS":"$CONTAINER_WS" \
+              -e WORKSPACE="$CONTAINER_WS" \
+              -w "$CONTAINER_WS" \
+              "$IMAGE" bash -lc '
+                set -euo pipefail
+                cd chromium/src
+                if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
+                  echo "Found prebuilt out/arm64 — running incremental APK build"
+                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline || true
+                else
+                  echo "No prebuilt out/arm64 found — running full GN/Ninja build"
+                  gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
+                  gn args out/arm64/ --list --short || true
+                  gn args out/arm64/ --list >out/arm64/gn_list || true
+                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
+                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
+                  cp ../../cromite/build/RELEASE out/arm64 || true
+                fi'
           else
-            echo "No prebuilt out/arm64 found — running full GN/Ninja build"
-            echo "::group::-------- gn gen"
-            gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
-            echo "::endgroup::"
-
-            echo "::group::-------- gn args"
-            gn args out/arm64/ --list --short || true
-            gn args out/arm64/ --list >out/arm64/gn_list || true
-            echo "::endgroup::"
-
-            vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
-            vpython3 /home/lg/working_dir/depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
-            cp ../../cromite/build/RELEASE out/arm64 || true
+            echo "Docker image not available or pull failed — building on host"
+            cd "$HOST_WS/chromium/src"
+            if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
+              vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline || true
+            else
+              gn gen --args="target_os = \"android\" $(cat $HOST_WS/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
+              gn args out/arm64/ --list --short || true
+              gn args out/arm64/ --list >out/arm64/gn_list || true
+              vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_bundle --offline
+              vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline
+              cp ../../cromite/build/RELEASE out/arm64 || true
+            fi
           fi
 
       - name: Get ninja logs Android arm64
