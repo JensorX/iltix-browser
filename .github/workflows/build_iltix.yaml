@@ -17,17 +17,17 @@ on:
       - 'iltix'
   workflow_dispatch:
     inputs:
-      env:
-        REMOVEDOCKERSUPPORT: true
-        USELOCALIMAGE: true
-        USEINTERNALNETWORK: true
-        WORKSPACE: ${{ github.workspace }}
-        HOME: ${{ github.workspace }}
-        TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
-        TARGET_OS: android
-        USE_KEYSTORE: true
-        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
+      sha:
+        description: 'uazo/cromite SHA'
+        required: true
+        default: ''
+      target_os:
+        description: 'targetos [android/win/linux/all]'
+        required: true
+        default: 'android'
+      build:
+        description: 'android arch [arm/arm64/x64/all]'
+        required: true
         default: 'arm64'
       type:
         description: 'runner? [dev/ci]'
