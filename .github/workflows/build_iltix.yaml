@@ -45,6 +45,10 @@ on:
         description: 'uazo/cromite release tag (or "latest")'
         required: false
         default: 'latest'
+      sign:
+        description: 'Sign build? [true/false] (default false)'
+        required: false
+        default: 'false'
 
 env:
   CROMITE_SHA: ${{ github.event.inputs.sha || github.sha }}
@@ -54,7 +58,7 @@ env:
 jobs:
   check_images:
     if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.cromite_release == 'build' || github.event.inputs.cromite_release == '') }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.type || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout cromite
         uses: actions/checkout@v4
@@ -188,22 +192,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cromite_release || 'latest' }}"
-          echo "Using cromite release tag: $TAG"
-          # If user passed 'latest', try to resolve the real tag name via GitHub API
-          if [ "$TAG" = "latest" ]; then
+          # Resolve requested refs
+          INPUT_SHA='${{ github.event.inputs.sha }}'
+          INPUT_RELEASE='${{ github.event.inputs.cromite_release }}'
+          TAG="$INPUT_RELEASE"
+          if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
             echo "Resolving latest release tag via GitHub API"
-            API_TAG=$(curl -s https://api.github.com/repos/uazo/cromite/releases/latest | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/' || true)
-            if [ -n "$API_TAG" ]; then
-              TAG="$API_TAG"
-              echo "Resolved cromite release tag: $TAG"
-            else
-              echo "Could not resolve latest release tag via API; proceeding with TAG=latest"
-            fi
+            TAG=$(curl -s https://api.github.com/repos/uazo/cromite/releases/latest | grep '"tag_name":' | sed -E 's/.*"tag_name":\s*"([^\"]+)".*/\1/' || true)
+            echo "Resolved cromite release tag: $TAG"
           fi
+
+          # Determine a ref to checkout: prefer explicit SHA input, otherwise use TAG
+          REF="$INPUT_SHA"
+          if [ -z "$REF" ]; then
+            REF="$TAG"
+          fi
+
+          # Clone the cromite repo at the chosen ref so we can read build/RELEASE and the commit SHA
+          rm -rf cromite || true
+          if git clone --depth 1 --branch "$REF" https://github.com/uazo/cromite.git cromite 2>/dev/null; then
+            echo "Cloned uazo/cromite@$REF"
+          else
+            echo "Shallow clone by branch failed, falling back to full clone and checkout"
+            git clone https://github.com/uazo/cromite.git cromite
+            cd cromite
+            git fetch --all --tags --prune
+            git checkout "$REF" || true
+            cd ..
+          fi
+
           mkdir -p tmp_out
           ASSETS=("out-arm64.tar.gz" "out_arm64.tar.gz" "out/arm64.tar.gz" "out_arm64.tar" "out-arm64.tar")
           FOUND=0
+
+          # Try release assets first
           for a in "${ASSETS[@]}"; do
             URL="https://github.com/uazo/cromite/releases/download/${TAG}/${a}"
             echo "Trying $URL"
@@ -215,39 +237,58 @@ jobs:
               break
             fi
           done
+
+          # If no tarball, try docker images using the same tag pattern as build_cromite
           if [ $FOUND -eq 0 ]; then
             echo "No release asset found, trying docker image extraction"
-            IMAGE_TAG="uazo/cromite-build:$TAG"
-            attempts=0
-            max_attempts=3
+            VERSION=""
+            if [ -f cromite/build/RELEASE ]; then
+              VERSION=$(cat cromite/build/RELEASE)
+            fi
+            CROMITE_SHA=""
+            if [ -d cromite ]; then
+              CROMITE_SHA=$(cd cromite && git rev-parse HEAD || true)
+            fi
+
+            IMAGE_TAGS=()
+            if [ -n "$VERSION" ] && [ -n "$CROMITE_SHA" ]; then
+              IMAGE_TAGS+=("uazo/cromite-build:${VERSION}-${CROMITE_SHA}")
+            fi
+            IMAGE_TAGS+=("uazo/cromite-build:build" "uazo/cromite-build:latest")
+
             pulled=0
-            # try docker pull with retries
             if command -v docker >/dev/null 2>&1; then
-              until [ $attempts -ge $max_attempts ]; do
-                if docker pull "$IMAGE_TAG"; then
-                  pulled=1
-                  break
-                fi
-                attempts=$((attempts+1))
-                echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
-                sleep $((attempts*5))
-              done
-              if [ $pulled -eq 1 ]; then
-                CID=$(docker create "$IMAGE_TAG" true 2>/dev/null || true)
-                if [ -n "$CID" ]; then
-                  if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
-                    echo "Copied out/arm64 from container $CID"
-                    FOUND=1
-                  else
-                    echo "docker cp failed to copy out/arm64 from $CID"
+              for IMAGE in "${IMAGE_TAGS[@]}"; do
+                echo "Attempting docker pull $IMAGE"
+                attempts=0
+                max_attempts=3
+                until [ $attempts -ge $max_attempts ]; do
+                  if docker pull "$IMAGE"; then
+                    pulled=1
+                    break
                   fi
-                  docker rm "$CID" || true
-                else
-                  echo "docker create failed, ContainerId empty"
+                  attempts=$((attempts+1))
+                  echo "docker pull failed attempt $attempts for $IMAGE, retrying in $((attempts*5))s"
+                  sleep $((attempts*5))
+                done
+                if [ $pulled -eq 1 ]; then
+                  echo "Pulled $IMAGE"
+                  CID=$(docker create "$IMAGE" true 2>/dev/null || true)
+                  if [ -n "$CID" ]; then
+                    if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
+                      echo "Copied out/arm64 from container $CID"
+                      FOUND=1
+                      docker rm "$CID" || true
+                      break
+                    else
+                      echo "docker cp failed to copy out/arm64 from $CID"
+                      docker rm "$CID" || true
+                    fi
+                  else
+                    echo "docker create failed for $IMAGE, ContainerId empty"
+                  fi
                 fi
-              else
-                echo "docker pull failed after $max_attempts attempts"
-              fi
+              done
             else
               echo "docker CLI not available on runner; skipping docker image extraction"
             fi
@@ -271,7 +312,7 @@ jobs:
           path: out-arm64.tar.gz
 
   build:
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.type || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: prepare_out
     if: success()
     timeout-minutes: 1440
@@ -280,8 +321,7 @@ jobs:
       HOME: ${{ github.workspace }}
       TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
       TARGET_OS: android
-      USE_KEYSTORE: true
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      USE_KEYSTORE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sign || 'false' }}
       CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
 
     steps:
@@ -299,10 +339,12 @@ jobs:
 
           sudo chown lg /home/lg/working_dir || true
 
-          # prepare keystore (decrypt from secret)
-          echo "${{ secrets.KEYSTORE }}" > cromite.keystore.asc || true
-          if [ -s cromite.keystore.asc ]; then
-            gpg --homedir ./ -d --passphrase "${{ secrets.KEYSTORE_PASSPHRASE }}" --batch cromite.keystore.asc > cromite.keystore || true
+          # prepare keystore only if requested
+          if [ "${USE_KEYSTORE:-}" = "true" ]; then
+            echo "${{ secrets.KEYSTORE }}" > cromite.keystore.asc || true
+            if [ -s cromite.keystore.asc ]; then
+              gpg --homedir ./ -d --passphrase "${{ secrets.KEYSTORE_PASSPHRASE }}" --batch cromite.keystore.asc > cromite.keystore || true
+            fi
           fi
 
       - name: Download prebuilt out-arm64 artifact (if available)
@@ -316,35 +358,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Apply iltix patches into chromium/src
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Looking for patches in $GITHUB_WORKSPACE/iltix/patches"
-          if [ ! -d "$GITHUB_WORKSPACE/iltix/patches" ]; then
-            echo "No iltix patches directory found; skipping." && exit 0
-          fi
-
-          cd "$WORKSPACE/chromium/src"
-          # ensure repo state
-          if [ ! -d .git ]; then
-            echo "chromium/src is not a git repository; cannot apply patches" && exit 1
-          fi
-
-          for p in "$GITHUB_WORKSPACE"/iltix/patches/*.patch; do
-            [ -e "$p" ] || continue
-            echo "Applying patch: $p"
-            if git am --3way < "$p"; then
-              echo "Applied $p with git am"
-            else
-              if git apply --index "$p"; then
-                git commit -m "Apply iltix patch: $(basename "$p")"
-              else
-                echo "git apply failed for $p"
-              fi
-            fi
-          done
 
       - name: Run build (use cromite image if available)
         shell: bash
@@ -361,7 +374,7 @@ jobs:
           fi
           IMAGE="uazo/cromite-build:$TAG"
 
-          # Try docker if available
+          # Try docker pull with retries; if available, run build in container and apply patches there
           pulled=0
           if command -v docker >/dev/null 2>&1; then
             attempts=0
@@ -381,22 +394,59 @@ jobs:
 
           if [ "$pulled" = "1" ]; then
             echo "Running build inside container $IMAGE"
-            docker run --rm -v "$HOST_WS":"$CONTAINER_WS" -e WORKSPACE="$CONTAINER_WS" -w "$CONTAINER_WS" "$IMAGE" bash -lc '
-              set -euo pipefail
-              cd chromium/src
-              if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
-                echo "Found prebuilt out/arm64 — running incremental APK build"
-                vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline || true
-              else
-                echo "No prebuilt out/arm64 found — running full GN/Ninja build"
-                gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
-                vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
-                vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
-                cp ../../cromite/build/RELEASE out/arm64 || true
-              fi'
+            docker run --rm \
+              -v "$HOST_WS/iltix/patches":"$CONTAINER_WS/iltix_patches":ro \
+              -e WORKSPACE="$CONTAINER_WS" \
+              -e USE_KEYSTORE="$USE_KEYSTORE" \
+              -w "$CONTAINER_WS" \
+              "$IMAGE" bash -lc '
+                set -euo pipefail
+                cd chromium/src
+                # Apply iltix patches mounted into /home/lg/working_dir/iltix_patches
+                if [ -d /home/lg/working_dir/iltix_patches ]; then
+                  for p in /home/lg/working_dir/iltix_patches/*.patch; do
+                    [ -e "$p" ] || continue
+                    echo "Applying patch: $p"
+                    if git am --3way < "$p"; then
+                      echo "Applied $p with git am"
+                    else
+                      if git apply --index "$p"; then
+                        git commit -m "Apply iltix patch: $(basename "$p")" || true
+                      else
+                        echo "git apply failed for $p"
+                      fi
+                    fi
+                  done
+                fi
+                if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
+                  echo "Found prebuilt out/arm64 — running incremental APK build"
+                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline || true
+                else
+                  echo "No prebuilt out/arm64 found — running full GN/Ninja build"
+                  gn gen --args="target_os = \"android\" $(cat /home/lg/working_dir/cromite/build/cromite.gn_args) target_cpu = \"arm64\" " out/arm64 || true
+                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_bundle --offline
+                  vpython3 depot_tools/siso.py ninja -C out/arm64 chrome_public_apk --offline
+                  cp ../../cromite/build/RELEASE out/arm64 || true
+                fi'
           else
             echo "Building on host"
             cd "$HOST_WS/chromium/src"
+            # Apply iltix patches on host
+            if [ -d "$HOST_WS/iltix/patches" ]; then
+              for p in "$HOST_WS"/iltix/patches/*.patch; do
+                [ -e "$p" ] || continue
+                echo "Applying patch: $p"
+                if git am --3way < "$p"; then
+                  echo "Applied $p with git am"
+                else
+                  if git apply --index "$p"; then
+                    git commit -m "Apply iltix patch: $(basename "$p")" || true
+                  else
+                    echo "git apply failed for $p"
+                  fi
+                fi
+              done
+            fi
             if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
               vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline || true
             else
