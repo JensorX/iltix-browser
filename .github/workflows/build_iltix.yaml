@@ -204,11 +204,35 @@ jobs:
           done
           if [ $FOUND -eq 0 ]; then
             echo "No release asset found, trying docker image extraction"
-            if docker pull uazo/cromite-build:$TAG; then
-              CID=$(docker create uazo/cromite-build:$TAG true)
-              docker cp $CID:/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp $CID:/out/arm64 tmp_out/arm64 2>/dev/null || true
-              docker rm $CID || true
-              if [ -d tmp_out/arm64 ]; then FOUND=1; fi
+            IMAGE_TAG="uazo/cromite-build:$TAG"
+            attempts=0
+            max_attempts=3
+            pulled=0
+            # try docker pull with retries
+            until [ $attempts -ge $max_attempts ]; do
+              if docker pull "$IMAGE_TAG"; then
+                pulled=1
+                break
+              fi
+              attempts=$((attempts+1))
+              echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
+              sleep $((attempts*5))
+            done
+            if [ $pulled -eq 1 ]; then
+              CID=$(docker create "$IMAGE_TAG" true 2>/dev/null || true)
+              if [ -n "$CID" ]; then
+                if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
+                  echo "Copied out/arm64 from container"
+                  FOUND=1
+                else
+                  echo "docker cp failed to copy out/arm64 from $CID"
+                fi
+                docker rm "$CID" || true
+              else
+                echo "docker create failed, ContainerId empty"
+              fi
+            else
+              echo "docker pull failed after $max_attempts attempts"
             fi
           fi
           if [ $FOUND -eq 1 ]; then
@@ -320,8 +344,26 @@ jobs:
         run: |
           set -euo pipefail
           echo "Using image: $IMAGE"
-          # Try to pull image; if available run the build inside it, else build on host
-          if docker pull "$IMAGE"; then
+          # Try to pull image with retries; if available run the build inside it, else build on host
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "docker CLI not available on runner — falling back to host build"
+            pulled=0
+          else
+            attempts=0
+            max_attempts=3
+            pulled=0
+            until [ $attempts -ge $max_attempts ]; do
+              if docker pull "$IMAGE"; then
+                pulled=1
+                break
+              fi
+              attempts=$((attempts+1))
+              echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
+              sleep $((attempts*5))
+            done
+          fi
+
+          if [ "$pulled" = "1" ]; then
             echo "Image pulled: $IMAGE -- running build inside container"
             docker run --rm \
               -v "$HOST_WS":"$CONTAINER_WS" \
@@ -343,7 +385,7 @@ jobs:
                   cp ../../cromite/build/RELEASE out/arm64 || true
                 fi'
           else
-            echo "Docker image not available or pull failed — building on host"
+            echo "Docker image not available or pull failed after retries — building on host"
             cd "$HOST_WS/chromium/src"
             if [ -d out/arm64 ] && [ "$(ls -A out/arm64 | wc -l)" -gt 0 ]; then
               vpython3 "$HOST_WS/depot_tools/siso.py" ninja -C out/arm64 chrome_public_apk --offline || true
