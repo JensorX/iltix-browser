@@ -1,8 +1,9 @@
 name: Build Iltix (Cromite + iltix patches)
 permissions:
-  actions: none
+  actions: write
+  workflows: write
+  contents: read
   checks: none
-  contents: none
   deployments: none
   issues: none
   packages: none
@@ -45,6 +46,10 @@ on:
         description: 'uazo/cromite release tag (or "latest")'
         required: false
         default: 'latest'
+      out_url:
+        description: 'Optional: direct URL to out-arm64 tar.gz (used before other lookups)'
+        required: false
+        default: ''
       sign:
         description: 'Sign build? [true/false] (default false)'
         required: false
@@ -225,18 +230,49 @@ jobs:
           ASSETS=("out-arm64.tar.gz" "out_arm64.tar.gz" "out/arm64.tar.gz" "out_arm64.tar" "out-arm64.tar")
           FOUND=0
 
-          # Try release assets first
-          for a in "${ASSETS[@]}"; do
-            URL="https://github.com/uazo/cromite/releases/download/${TAG}/${a}"
-            echo "Trying $URL"
-            if curl -sfL "$URL" -o /tmp/$a; then
-              echo "Downloaded asset $a"
+          # If the caller supplied a direct URL to an out tar, try it first
+          INPUT_OUT_URL='${{ github.event.inputs.out_url }}'
+          if [ -n "$INPUT_OUT_URL" ]; then
+            echo "Trying direct out URL: $INPUT_OUT_URL"
+            if curl -sfL "$INPUT_OUT_URL" -o /tmp/out_direct.tar.gz; then
               mkdir -p tmp_out/arm64
-              tar -xzf /tmp/$a -C tmp_out 2>/dev/null || tar -xf /tmp/$a -C tmp_out 2>/dev/null || true
+              tar -xzf /tmp/out_direct.tar.gz -C tmp_out 2>/dev/null || tar -xf /tmp/out_direct.tar.gz -C tmp_out 2>/dev/null || true
               FOUND=1
-              break
+            else
+              echo "Direct out URL not reachable"
             fi
-          done
+          fi
+
+          # Try release assets from upstream uazo/cromite
+          if [ $FOUND -eq 0 ]; then
+            for a in "${ASSETS[@]}"; do
+              URL="https://github.com/uazo/cromite/releases/download/${TAG}/${a}"
+              echo "Trying $URL"
+              if curl -sfL "$URL" -o /tmp/$a; then
+                echo "Downloaded asset $a"
+                mkdir -p tmp_out/arm64
+                tar -xzf /tmp/$a -C tmp_out 2>/dev/null || tar -xf /tmp/$a -C tmp_out 2>/dev/null || true
+                FOUND=1
+                break
+              fi
+            done
+          fi
+
+          # If still not found, try this repository's releases (helpful for forks/uploads)
+          if [ $FOUND -eq 0 ]; then
+            echo "Checking this repository (${GITHUB_REPOSITORY}) releases for prebuilt assets"
+            for a in "${ASSETS[@]}"; do
+              URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${a}"
+              echo "Trying $URL"
+              if curl -sfL "$URL" -o /tmp/$a; then
+                echo "Downloaded asset $a from ${GITHUB_REPOSITORY}"
+                mkdir -p tmp_out/arm64
+                tar -xzf /tmp/$a -C tmp_out 2>/dev/null || tar -xf /tmp/$a -C tmp_out 2>/dev/null || true
+                FOUND=1
+                break
+              fi
+            done
+          fi
 
           # If no tarball, try docker images using the same tag pattern as build_cromite
           if [ $FOUND -eq 0 ]; then
@@ -289,6 +325,57 @@ jobs:
                   fi
                 fi
               done
+
+              # If standard tags didn't work, probe Docker Hub for the most recent tags and try them
+              if [ $pulled -eq 0 ] && command -v docker >/dev/null 2>&1; then
+                echo "No standard tag pulled; querying Docker Hub for recent tags"
+                # request up to 100 tags, extract names
+                TAG_JSON=$(curl -sfL "https://registry.hub.docker.com/v2/repositories/uazo/cromite-build/tags?page_size=100" || true)
+                if [ -n "$TAG_JSON" ]; then
+                  # extract tag names (fallback if jq not present)
+                  TAGS=$(echo "$TAG_JSON" | grep -oP '"name":\s*"\K[^"]+' | tr '\n' ' ')
+                  for t in $TAGS; do
+                    # skip empty
+                    if [ -z "$t" ]; then continue; fi
+                    # avoid re-trying tags already in IMAGE_TAGS
+                    SKIP=0
+                    for et in "${IMAGE_TAGS[@]}"; do
+                      if [ "$et" = "uazo/cromite-build:$t" ]; then SKIP=1; break; fi
+                    done
+                    if [ $SKIP -eq 1 ]; then continue; fi
+
+                    IMAGE="uazo/cromite-build:$t"
+                    echo "Attempting docker pull $IMAGE (from Docker Hub tag list)"
+                    attempts=0
+                    max_attempts=2
+                    until [ $attempts -ge $max_attempts ]; do
+                      if docker pull "$IMAGE"; then
+                        pulled=1
+                        break
+                      fi
+                      attempts=$((attempts+1))
+                      sleep $((attempts*5))
+                    done
+                    if [ $pulled -eq 1 ]; then
+                      echo "Pulled $IMAGE"
+                      CID=$(docker create "$IMAGE" true 2>/dev/null || true)
+                      if [ -n "$CID" ]; then
+                        if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
+                          echo "Copied out/arm64 from container $CID"
+                          FOUND=1
+                          docker rm "$CID" || true
+                          break
+                        else
+                          echo "docker cp failed for $IMAGE"
+                          docker rm "$CID" || true
+                        fi
+                      fi
+                    fi
+                  done
+                else
+                  echo "Docker Hub tags query returned empty response"
+                fi
+              fi
             else
               echo "docker CLI not available on runner; skipping docker image extraction"
             fi
@@ -300,8 +387,73 @@ jobs:
             ls -la out-arm64.tar.gz
             echo "found=1" >> $GITHUB_OUTPUT
           else
-            echo "found=0" >> $GITHUB_OUTPUT
             echo "No prebuilt out/arm64 found"
+
+            # Try to trigger the repository workflow that builds cromite artifacts
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              BRANCH="${GITHUB_REF#refs/heads/}"
+              if [ -z "$BRANCH" ]; then BRANCH="main"; fi
+              echo "Dispatching build_cromite workflow on branch $BRANCH (sha: $CROMITE_SHA)"
+              curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build_cromite.yaml/dispatches" \
+                -d "{\"ref\": \"$BRANCH\", \"inputs\": { \"sha\": \"$CROMITE_SHA\", \"type\": \"ci\", \"debug\": \"false\", \"clangd\": \"false\" } }" || true
+
+              # Poll for up to 30 attempts (approx 30 minutes) for artifacts/images to appear
+              attempts=0
+              max_attempts=30
+              until [ $attempts -ge $max_attempts ]; do
+                attempts=$((attempts+1))
+                echo "Checking for prebuilt out (attempt $attempts/$max_attempts)"
+
+                # try release assets again
+                for a in "${ASSETS[@]}"; do
+                  URL="https://github.com/uazo/cromite/releases/download/${TAG}/${a}"
+                  if curl -sfL "$URL" -o /tmp/$a; then
+                    echo "Downloaded asset $a after dispatch"
+                    mkdir -p tmp_out/arm64
+                    tar -xzf /tmp/$a -C tmp_out 2>/dev/null || tar -xf /tmp/$a -C tmp_out 2>/dev/null || true
+                    FOUND=1
+                    break
+                  fi
+                done
+                if [ $FOUND -eq 1 ]; then break; fi
+
+                # try docker images again
+                if command -v docker >/dev/null 2>&1; then
+                  for IMAGE in "${IMAGE_TAGS[@]}"; do
+                    echo "Attempting docker pull $IMAGE"
+                    if docker pull "$IMAGE"; then
+                      CID=$(docker create "$IMAGE" true 2>/dev/null || true)
+                      if [ -n "$CID" ]; then
+                        if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
+                          echo "Copied out/arm64 from container $CID after dispatch"
+                          FOUND=1
+                          docker rm "$CID" || true
+                          break
+                        else
+                          docker rm "$CID" || true
+                        fi
+                      fi
+                    fi
+                  done
+                fi
+
+                if [ $FOUND -eq 1 ]; then break; fi
+                echo "Not found yet, sleeping 60s"
+                sleep 60
+              done
+            else
+              echo "No GITHUB_TOKEN available; cannot dispatch build_cromite workflow"
+            fi
+
+            if [ $FOUND -eq 1 ]; then
+              tar -czf out-arm64.tar.gz -C tmp_out arm64 || tar -czf out-arm64.tar.gz tmp_out/arm64 || true
+              ls -la out-arm64.tar.gz
+              echo "found=1" >> $GITHUB_OUTPUT
+            else
+              echo "found=0" >> $GITHUB_OUTPUT
+              echo "No prebuilt out/arm64 found after dispatch/polling"
+            fi
           fi
 
       - name: Upload out/arm64 artifact
