@@ -256,24 +256,14 @@ jobs:
     needs: prepare_out
     if: success()
     timeout-minutes: 1440
-
-    container:
-      image: uazo/cromite-build:${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cromite_release || 'latest' }}
-      env:
-        REMOVEDOCKERSUPPORT: true
-        USELOCALIMAGE: true
-        USEINTERNALNETWORK: true
-        WORKSPACE: /home/lg/working_dir
-        HOME: /home/lg/working_dir
-        TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
-        TARGET_OS: android
-        USE_KEYSTORE: true
-        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
-      volumes:
-        - /storage/images/${{ github.event.inputs.sha || github.sha }}/android/${{ github.event.inputs.debug || 'false' }}/arm64:/home/lg/working_dir/chromium/src/out/arm64
-        - /tmp/proxy:/tmp/proxy
-        - /win_sdk:/win_sdk
+    env:
+      WORKSPACE: /home/lg/working_dir
+      HOME: /home/lg/working_dir
+      TARGET_ISDEBUG: ${{ github.event.inputs.debug || 'false' }}
+      TARGET_OS: android
+      USE_KEYSTORE: true
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      CROMITE_PREF_HASH_SEED_BIN: ${{ secrets.CROMITE_PREF_HASH_SEED_BIN }}
 
     steps:
       - name: Prepare Build Container
@@ -319,39 +309,44 @@ jobs:
 
           cd $WORKSPACE/chromium/src
           # ensure repo state
-          if [ ! -d .git ]; then
-            echo "chromium/src is not a git repository; cannot apply patches" && exit 1
-          fi
-
-          for p in "$GITHUB_WORKSPACE"/iltix/patches/*.patch; do
-            [ -e "$p" ] || continue
-            echo "Applying patch: $p"
-            # try git am (email-style patches), fallback to git apply
-            if git am --3way < "$p"; then
-              echo "Applied $p with git am"
+          if [ $FOUND -eq 0 ]; then
+            echo "No release asset found, trying docker image extraction"
+            IMAGE_TAG="uazo/cromite-build:$TAG"
+            FOUND=0
+            # only attempt docker operations if docker CLI is available
+            if command -v docker >/dev/null 2>&1; then
+              attempts=0
+              max_attempts=3
+              pulled=0
+              until [ $attempts -ge $max_attempts ]; do
+                if docker pull "$IMAGE_TAG"; then
+                  pulled=1
+                  break
+                fi
+                attempts=$((attempts+1))
+                echo "docker pull failed attempt $attempts, retrying in $((attempts*5))s"
+                sleep $((attempts*5))
+              done
+              if [ $pulled -eq 1 ]; then
+                CID=$(docker create "$IMAGE_TAG" true 2>/dev/null || true)
+                if [ -n "$CID" ]; then
+                  if docker cp "$CID":/home/lg/working_dir/chromium/src/out/arm64 tmp_out/arm64 2>/dev/null || docker cp "$CID":/out/arm64 tmp_out/arm64 2>/dev/null; then
+                    echo "Copied out/arm64 from container"
+                    FOUND=1
+                  else
+                    echo "docker cp failed to copy out/arm64 from $CID"
+                  fi
+                  docker rm "$CID" || true
+                else
+                  echo "docker create failed, ContainerId empty"
+                fi
+              else
+                echo "docker pull failed after $max_attempts attempts"
+              fi
             else
-              git apply --index "$p" && git commit -m "Apply iltix patch: $(basename "$p")" || echo "git apply failed for $p"
+              echo "docker CLI not available on runner; skipping docker image extraction"
             fi
-          done
-
-      - name: Run build (use cromite image if available)
-        if: ${{ (github.event.inputs.target_os == 'android' || github.event.inputs.target_os == 'all') && (github.event.inputs.build == 'arm64' || github.event.inputs.build == 'all') }}
-        shell: bash
-        env:
-          IMAGE: "uazo/cromite-build:${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cromite_release || 'latest' }}"
-          CONTAINER_WS: /home/lg/working_dir
-          HOST_WS: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          echo "Using image: $IMAGE"
-          # Try to pull image with retries; if available run the build inside it, else build on host
-          if ! command -v docker >/dev/null 2>&1; then
-            echo "docker CLI not available on runner — falling back to host build"
-            pulled=0
-          else
-            attempts=0
-            max_attempts=3
-            pulled=0
+          fi
             until [ $attempts -ge $max_attempts ]; do
               if docker pull "$IMAGE"; then
                 pulled=1
