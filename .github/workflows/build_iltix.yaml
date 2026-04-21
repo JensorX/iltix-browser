@@ -1,7 +1,6 @@
 name: Build Iltix (Cromite + iltix patches)
 permissions:
   actions: write
-  workflows: write
   contents: read
   checks: none
   deployments: none
